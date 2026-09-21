@@ -21,6 +21,7 @@
 #define PCSX2_HOSTMEM_H
 
 #include <stdio.h>
+#include <stdint.h>
 #include <memmap.h>
 #include "common/General.h"
 
@@ -109,19 +110,28 @@ static inline void host_munmap(void* p, size_t size)
 #endif
 }
 
-/* A shared-memory name unique to this process. FreeBSD's shm_open needs
- * an absolute path; the others take a bare name. */
+/* A shared-memory name unique to this copy of the core. FreeBSD's shm_open
+ * needs an absolute path; the others take a bare name.
+ *
+ * The process ID alone is not enough: a frontend running two consoles loads
+ * the core twice, each from its own copy of the library, into one process.
+ * Both would then ask for the same name, and on Windows the second is handed
+ * the first one's mapping -- two machines writing one guest RAM, which ends in
+ * a crash within a second of the second one booting. The address of a static
+ * in this image tells the copies apart. */
 static inline void host_shm_name(char* buf, size_t len, const char* prefix)
 {
+	static const char s_image_tag = 0;
+	const unsigned long long tag = (unsigned long long)(uintptr_t)&s_image_tag;
 #if defined(_WIN32)
 	const unsigned pid = (unsigned)GetCurrentProcessId();
-	snprintf(buf, len, "%s_%u", prefix, pid);
+	snprintf(buf, len, "%s_%u_%llx", prefix, pid, tag);
 #elif defined(__FreeBSD__)
 	const unsigned pid = (unsigned)getpid();
-	snprintf(buf, len, "/tmp/%s_%u", prefix, pid);
+	snprintf(buf, len, "/tmp/%s_%u_%llx", prefix, pid, tag);
 #else
 	const unsigned pid = (unsigned)getpid();
-	snprintf(buf, len, "%s_%u", prefix, pid);
+	snprintf(buf, len, "%s_%u_%llx", prefix, pid, tag);
 #endif
 }
 
