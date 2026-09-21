@@ -62,6 +62,11 @@
 #include "IopHw.h"
 #include "IopMem.h"
 #include "R3000A.h"
+#include "R5900.h"
+#include "SaveState.h"
+#include "VMManager.h"
+
+#include <rthreads/rthreads.h>
 
 #include "FW.h"
 
@@ -989,19 +994,107 @@ static void fw_release(void)
 	fw_schedule();
 }
 
-static void cable_rendezvous(void)
+/* ---- the rendezvous ----
+ *
+ * advance() blocks until the other consoles have published far enough, and
+ * nothing can wake it early but a message or a change of cable: there is no
+ * timeout, by design. A console waiting on a peer the frontend has stopped
+ * running would therefore sit in it for as long as the peer stays stopped,
+ * and a pause asked of this console meanwhile -- which every save and load
+ * starts with -- would wait on it in turn.
+ *
+ * So the EE never calls advance() itself. A helper thread does, and the EE
+ * waits for the helper's answer while watching for a pause. If one comes,
+ * the IOP gives up the rest of its slice and the EE leaves its loop at the
+ * next block boundary: the machine stops where it stands, at a point a save
+ * state can be taken from, and emulated time has not moved past what the
+ * cable granted. The request stays with the helper, and the EE picks the
+ * answer up when it runs again. */
+static struct
 {
-	u64 now = fw_clock();
-	u64 grain = cable.peers >= 2 ? FW_GRAIN_LINKED : FW_GRAIN_ALONE;
-	u64 grant;
-	uint32_t wake = RETRO_LINK_WAKE_NONE;
+	sthread_t* thread;
+	slock_t* lock;
+	scond_t* cond;
+	bool quit;
+	bool posted;       /* a request is waiting for the helper        */
+	bool done;         /* the helper's answer is waiting for the EE  */
+	bool pending;      /* a request is out and not yet collected     */
+	u64 now, safe, request, grain;
+	uint64_t grant;
+	uint32_t wake;
+} rv;
 
-	/* Published before anything is read: a peer parked on this console's
-	 * horizon cannot move until it has been told the horizon moved. */
-	if (now + grain > cable.safe)
-		cable.safe = now + grain;
-	grant = cable.link->advance(cable.handle, now, cable.safe, now + grain, &wake);
-	(void)grant;
+static void rv_thread(void*)
+{
+	slock_lock(rv.lock);
+	for (;;)
+	{
+		u64 now, safe, request;
+		uint32_t wake = RETRO_LINK_WAKE_NONE;
+		uint64_t grant;
+
+		while (!rv.posted && !rv.quit)
+			scond_wait(rv.cond, rv.lock);
+		if (rv.quit)
+			break;
+		rv.posted = false;
+		now = rv.now;
+		safe = rv.safe;
+		request = rv.request;
+		slock_unlock(rv.lock);
+
+		grant = cable.link->advance(cable.handle, now, safe, request, &wake);
+
+		slock_lock(rv.lock);
+		rv.grant = grant;
+		rv.wake = wake;
+		rv.done = true;
+		scond_broadcast(rv.cond);
+	}
+	slock_unlock(rv.lock);
+}
+
+/* True once the cable has granted this console its next stretch; false if a
+ * pause arrived first, in which case nothing here has changed. */
+static bool cable_rendezvous(void)
+{
+	if (!rv.pending)
+	{
+		u64 now = fw_clock();
+		u64 grain = cable.peers >= 2 ? FW_GRAIN_LINKED : FW_GRAIN_ALONE;
+
+		/* Published before anything is read: a peer parked on this
+		 * console's horizon cannot move until it has been told the horizon
+		 * moved. */
+		if (now + grain > cable.safe)
+			cable.safe = now + grain;
+		slock_lock(rv.lock);
+		rv.now = now;
+		rv.safe = cable.safe;
+		rv.request = now + grain;
+		rv.grain = grain;
+		rv.done = false;
+		rv.posted = true;
+		scond_broadcast(rv.cond);
+		slock_unlock(rv.lock);
+		rv.pending = true;
+	}
+
+	slock_lock(rv.lock);
+	while (!rv.done)
+	{
+		if (VMManager::Internal::IsExecutionInterrupted())
+		{
+			slock_unlock(rv.lock);
+			return false;
+		}
+		/* The wait is a wall-clock one only in how often it looks for a
+		 * pause; what the machine does depends on the grant alone. */
+		scond_wait_timeout(rv.cond, rv.lock, 1000);
+	}
+	rv.done = false;
+	slock_unlock(rv.lock);
+	rv.pending = false;
 
 	cable_refresh_peers();
 	if (cable.peers >= 2)
@@ -1018,7 +1111,8 @@ static void cable_rendezvous(void)
 			cable_announce();
 	}
 	cable_drain();
-	cable.next_rv = now + grain;
+	cable.next_rv = rv.now + rv.grain;
+	return true;
 }
 
 static void fw_schedule(void)
@@ -1052,8 +1146,19 @@ static void fw_schedule(void)
 
 void fwInterrupt(void)
 {
-	if (cable.attached && fw_clock() >= cable.next_rv)
-		cable_rendezvous();
+	if (cable.attached && fw_clock() >= cable.next_rv && !cable_rendezvous())
+	{
+		/* A pause is waiting and the cable has not answered. Stop here: the
+		 * IOP hands the rest of its slice back (the cycles are accounted for
+		 * when it next runs) and the EE leaves its loop once this event test
+		 * is over. This event comes straight back when the machine runs
+		 * again, and collects the answer then. */
+		psxRegs.iopBreak += psxRegs.iopCycleEE;
+		psxRegs.iopCycleEE = 0;
+		Cpu->ExitExecution();
+		PSX_INT(IopEvt_FW, 1);
+		return;
+	}
 	fw_release();
 }
 
@@ -1139,7 +1244,12 @@ static void fw_phy_access(u32 value)
 
 static void fw_reset_state(void)
 {
+	/* Everything but the clock: the cable's timeline only goes forward, and a
+	 * reset (or a state from before the controller was saved) is not time
+	 * going back. It counts on from wherever psxRegs.cycle now stands. */
+	const u64 now = fw.now;
 	memset(&fw, 0, sizeof(fw));
+	fw.now = now;
 	/* The PHY ran its own bus reset at power on, so the node already has an
 	 * ID -- the only one on a bus of one -- and says so in bit 0. Sony's
 	 * driver waits for that bit before it goes any further. */
@@ -1433,6 +1543,13 @@ void FWlinkAttach(const struct retro_link_interface* link, unsigned port)
 		return;
 	}
 	cable.link = link;
+	if (!rv.lock)
+	{
+		rv.lock = slock_new();
+		rv.cond = scond_new();
+	}
+	rv.quit = rv.posted = rv.done = rv.pending = false;
+	rv.thread = sthread_create(rv_thread, NULL);
 	cable.attached = true;
 	cable.self = -1;
 	cable.peers = 0;
@@ -1454,7 +1571,18 @@ void FWlinkDetach(void)
 	if (!cable.attached)
 		return;
 	cable.attached = false;
+	/* Leaving the bus is also what returns a helper parked in advance(). */
 	cable.link->detach(cable.handle);
+	if (rv.thread)
+	{
+		slock_lock(rv.lock);
+		rv.quit = true;
+		scond_broadcast(rv.cond);
+		slock_unlock(rv.lock);
+		sthread_join(rv.thread);
+		rv.thread = NULL;
+	}
+	rv.pending = false;
 	if (log_cb)
 		log_cb(RETRO_LOG_INFO, "i.LINK: cable detached (%llu sent, %llu received)\n",
 			(unsigned long long)cable.sent, (unsigned long long)cable.received);
@@ -1473,4 +1601,125 @@ u32 FWlinkIdSalt(void)
 	s = (u32)(h ^ (h >> 32));
 	s = s * 2654435761u;
 	return s ? s : 1;
+}
+
+/* ---- save states ----
+ *
+ * The controller is saved with the machine, so that a state puts the
+ * controller back as the driver in the restored RAM left it. The cable is
+ * not: it is the present, shared with other consoles, and its clock only ever
+ * goes forward -- the bus may never see a console step back. So what is kept
+ * of time is relative: pending events are saved as distances from now and
+ * come back as the same distances from the moment of the load, and the cycle
+ * timer as the value it showed. */
+
+#define FW_STATE_VERSION 1
+
+static void fw_freeze_fifo(SaveStateBase& st, fw_fifo& f)
+{
+	u32 n = f.count, i;
+	st.Freeze(n);
+	if (n > FIFO_QUADS)
+		n = FIFO_QUADS;
+	if (st.IsSaving())
+	{
+		for (i = 0; i < n; i++)
+		{
+			u32 v = f.q[(f.head + i) % FIFO_QUADS];
+			st.Freeze(v);
+		}
+	}
+	else
+	{
+		fifo_clear(&f);
+		for (i = 0; i < n; i++)
+		{
+			u32 v = 0;
+			st.Freeze(v);
+			fifo_push(&f, v);
+		}
+	}
+}
+
+bool SaveStateBase::fwFreeze()
+{
+	u32 version = FW_STATE_VERSION;
+	u64 now;
+	u64 cycle_ticks;
+	u32 nev = fw.nev, i;
+	u8 flags;
+
+	/* The restored psxRegs.cycle is a different counter from the one the
+	 * clock last read: count on from it rather than take the jump between
+	 * them as time passing. */
+	if (IsLoading())
+		fw.have_raw = false;
+	now = fw_clock();
+	cycle_ticks = fw_cycle_ticks();
+
+	if (!FreezeTag("iLink"))
+		return false;
+	Freeze(version);
+	if (IsLoading() && version != FW_STATE_VERSION)
+	{
+		if (log_cb)
+			log_cb(RETRO_LOG_WARN, "i.LINK: state has controller version %u, not %u; starting it fresh\n",
+				version, FW_STATE_VERSION);
+		m_error = true;
+		return false;
+	}
+
+	Freeze(fw.regs);
+	Freeze(fw.phy);
+	Freeze(fw.phy_page1);
+	fw_freeze_fifo(*this, fw.ubuf_rx);
+	fw_freeze_fifo(*this, fw.ubuf_tx);
+	fw_freeze_fifo(*this, fw.dbuf_rx[0]);
+	fw_freeze_fifo(*this, fw.dbuf_rx[1]);
+	fw_freeze_fifo(*this, fw.dbuf_tx0);
+	Freeze(fw.nodes);
+	Freeze(fw.phy_id);
+	flags = (u8)((fw.root ? 1 : 0) | (fw.id_valid ? 2 : 0) | (fw.tx_busy ? 4 : 0));
+	Freeze(flags);
+	Freeze(fw.pht);
+	Freeze(cycle_ticks);
+
+	Freeze(nev);
+	if (nev > FW_EVENTS)
+	{
+		m_error = true;
+		return false;
+	}
+	for (i = 0; i < nev; i++)
+	{
+		fw_event& e = fw.ev[i];
+		s64 rel = IsSaving() ? (s64)e.tick - (s64)now : 0;
+		Freeze(rel);
+		Freeze(e.type);
+		Freeze(e.arg);
+		Freeze(e.nquads);
+		if (e.nquads > FW_MAX_QUADS)
+		{
+			m_error = true;
+			return false;
+		}
+		FreezeMem(e.quads, (int)(e.nquads * 4));
+		if (IsLoading())
+		{
+			e.tick = rel > 0 ? now + (u64)rel : now;
+			e.seq = fw.next_seq++;
+		}
+	}
+
+	if (IsLoading())
+	{
+		fw.nev = nev;
+		fw.root = (flags & 1) != 0;
+		fw.id_valid = (flags & 2) != 0;
+		fw.tx_busy = (flags & 4) != 0;
+		fw.cyc_base = (s64)cycle_ticks - (s64)(now * 2 / 3);
+		fw.next_second = (FW_REG(R_CTRL0) & CTRL0_CYCTMREN) ? fw_next_second() : (u64)-1;
+		fw_schedule();
+	}
+	return IsOkay();
 }

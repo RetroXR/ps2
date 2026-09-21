@@ -169,6 +169,10 @@ public:
 	// position).
 	bool FreezeTag( const char* src );
 
+	// On a load, whether the next block is the one tagged `src`, without
+	// consuming anything: how a block that older states lack stays optional.
+	bool PeekTag( const char* src ) const;
+
 	// Returns true if this object is a StateLoading type object.
 	bool IsLoading() const { return !IsSaving(); }
 
@@ -209,6 +213,8 @@ protected:
 	bool sio2Freeze();
 
 	bool deci2Freeze();
+
+	bool fwFreeze();
 
 };
 

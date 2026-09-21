@@ -18,6 +18,7 @@
 #include <compat/strl.h>
 
 #include "SaveState.h"
+#include "FW.h"
 
 #include "HostFS.h"
 
@@ -76,6 +77,16 @@ bool SaveStateBase::FreezeTag(const char *src)
 	}
 
 	return true;
+}
+
+bool SaveStateBase::PeekTag(const char *src) const
+{
+	char tag[sizeof(m_tagspace)];
+	if (m_error || m_idx < 0 || (size_t)m_idx + sizeof(tag) > m_memory.size())
+		return false;
+	memset(tag, 0, sizeof(tag));
+	strlcpy(tag, src, sizeof(tag));
+	return memcmp(&m_memory[m_idx], tag, sizeof(tag)) == 0;
 }
 
 bool SaveStateBase::FreezeBios()
@@ -164,6 +175,14 @@ bool SaveStateBase::FreezeInternals()
 	// technically this is HLE BIOS territory, but we don't have enough such stuff
 	// to merit an HLE Bios sub-section... yet.
 	okay = okay && deci2Freeze();
+
+	// The i.LINK controller. Optional on a load: a state saved before it was
+	// modelled has no such block, and the controller then starts as a lone
+	// node that has just been powered on.
+	if (okay && (IsSaving() || PeekTag("iLink")))
+		okay = fwFreeze();
+	else if (okay)
+		FWclose();
 
 	return okay;
 }

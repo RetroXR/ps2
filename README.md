@@ -48,8 +48,17 @@ its second interrupt. Every console on the cable is a node; the bus index is
 its physical ID and the highest is root. The ack a packet earns is decided at
 the sender (every node is this same controller), so a transmit completes on
 emulated time alone. Not modelled: PHT block reads, isochronous/stream
-reception, and the i.LINK DMA channels (Sony's driver moves data by PIO). Save
-states do not carry the link: load one on both consoles with the cable pulled.
+reception, and the i.LINK DMA channels (Sony's driver moves data by PIO).
+
+Save states carry the controller (registers, FIFOs, PHT, pending events, as
+distances from the moment of saving) in an `iLink` block; states from before it
+still load, with the controller starting fresh. The cable itself is not saved --
+its clock only goes forward -- so a pair saved together and loaded together
+resumes linked play from the saved instant (verified mid-stage in Time Crisis
+II). A console waiting on the cable for a peer the frontend has stopped no
+longer blocks its own pause: the wait happens on a helper thread, and a pause
+stops the machine where it stands without running past what the cable granted,
+so saving one console while the other is paused completes at once.
 
 Two consoles usually share one NVRAM and so one i.LINK ID, which is the EUI-64
 the socket layer addresses peers by; a console on a cable salts it with the
