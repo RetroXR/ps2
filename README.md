@@ -28,6 +28,33 @@ calibration shot (neither button reaches the game while both are held); the
 EmuVR fork used the deprecated light-gun Pause ID for it, which current
 RetroArch reads from the Start bind.
 
+## i.LINK (IEEE 1394) link play
+
+Two consoles running in the same frontend can be joined by an emulated i.LINK
+cable, carried over the frontend's link bus
+(`RETRO_ENVIRONMENT_GET_LINK_INTERFACE`, protocol `ps2-ilink-1394`, clocked on
+the IOP's 36.864 MHz). Verified with Time Crisis II (USA, `SLUS-20219`): both
+consoles find each other in Arcade > Link, one takes the left player (Keith) and
+the other the right (Robert), and linked Story Mode plays with each console
+showing its own player's view. The option is `pcsx2_ilink` (on by default); a
+frontend without the link interface sees a port with nothing plugged in.
+
+The controller at 0x1F808400 was a register stub. It is now modelled from what
+the drivers games ship with -- Sony's `ILINK.IRX` and the ps2sdk's iLinkman --
+actually use: the PHY registers and its register-0 report, bus reset and the
+self-ID phase (into DBUF0), asynchronous packets through the UBUF, the PHT0
+block-write engine that `ILSOCK.IRX` sends datagrams with, the cycle timer and
+its second interrupt. Every console on the cable is a node; the bus index is
+its physical ID and the highest is root. The ack a packet earns is decided at
+the sender (every node is this same controller), so a transmit completes on
+emulated time alone. Not modelled: PHT block reads, isochronous/stream
+reception, and the i.LINK DMA channels (Sony's driver moves data by PIO). Save
+states do not carry the link: load one on both consoles with the cable pulled.
+
+Two consoles usually share one NVRAM and so one i.LINK ID, which is the EUI-64
+the socket layer addresses peers by; a console on a cable salts it with the
+handle the frontend gave it.
+
 ## Status (arm64)
 
 Verified booting to real in-game content (Mega Man X7 gameplay, Gran Turismo 3
@@ -343,6 +370,17 @@ Tracing/logging:
 | `LRPS2_MTVU_STATS=1` | C.80 lazy-kick effect: VIF unpack packets deferred vs MTVU notifies issued |
 | `LRPS2_DUMP_HOST=<pc>` / `LRPS2_DUMP_HOST_IOP=<pc>` / `LRPS2_DUMP_HOST_MVU=<pc>` | Write a compiled block's host code (+ guest words) for offline `objdump -D -b binary -m aarch64` |
 | `MVU_DIFF=1` | microVU1-vs-interpreter register-exact shadow differential (needs instant VU1 — even an empty `LRPS2_NO_VU1_INSTANT=` disables it and poisons the log) |
+
+These work on every architecture:
+
+| Variable | Effect |
+|---|---|
+| `LRPS2_ILINK_LOG=1` | i.LINK bus resets, self-IDs and every packet sent and received, as quadlets |
+| `LRPS2_FW_LOG=1` | Every i.LINK controller register access, with the IOP pc (implies `LRPS2_ILINK_LOG`) |
+| `LRPS2_IOP_STDOUT=1` / `LRPS2_EE_STDOUT=1` | Log the IOP's stdout and `Kprintf`, and the EE's SIO console, which are otherwise discarded |
+| `LRPS2_IOP_POKE=addr=val[,...]` | Write IOP words (hex) on every i.LINK register access -- how a driver's own debug switches get turned on |
+| `LRPS2_IOP_PCHOOK=addr=name[,...]` | Log a0-a3 each time the IOP reaches those addresses (selects the IOP interpreter) |
+| `LRPS2_IOP_DUMP=<path>` | Write IOP RAM out as the machine stops (`<path>.<bus index>` on a cable) |
 
 ## Measured and rejected
 

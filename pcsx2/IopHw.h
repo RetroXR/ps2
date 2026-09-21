@@ -23,7 +23,7 @@ static const u32
 	HW_USB_START	 = 0x1f801600,
 	HW_USB_END		 = 0x1f801700,
 	HW_FW_START		 = 0x1f808400,
-	HW_FW_END		 = 0x1f808550,	// end addr for FW is a guess...
+	HW_FW_END		 = 0x1f80857f,
 	HW_SPU2_START	 = 0x1f801c00,
 	HW_SPU2_END		 = 0x1f801e00;
 
@@ -301,6 +301,7 @@ enum IopEventId
 	IopEvt_CdvdSectorReady,
 	IopEvt_DEV9,
 	IopEvt_USB,
+	IopEvt_FW,
 };
 
 extern void PSX_INT( IopEventId n, s32 ecycle);

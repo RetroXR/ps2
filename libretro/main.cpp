@@ -27,6 +27,7 @@
 #include "../pcsx2/SPU2/Global.h"
 #include "../pcsx2/ps2/BiosTools.h"
 #include "../pcsx2/CDVD/CDVD.h"
+#include "../pcsx2/FW.h"
 #include "../pcsx2/USB/USB.h"
 #include "../pcsx2/DEV9/ATA/HddCreate.h"
 #include "../pcsx2/MTVU.h"
@@ -171,6 +172,12 @@ struct BiosInfo
 
 static std::vector<BiosInfo> bios_info;
 static std::string setting_bios;
+
+/* The frontend's link bus, which is the i.LINK cable; NULL when it has none.
+ * Looked up once in retro_init; joined per content, behind pcsx2_ilink. */
+static struct retro_link_interface s_link_iface;
+static const struct retro_link_interface* s_link_interface = NULL;
+static bool s_option_ilink = true;
 static std::string setting_renderer;
 static int setting_upscale_multiplier          = 1;
 static int setting_half_pixel_offset           = 0;
@@ -508,6 +515,10 @@ static void check_variables(bool first_run)
 			bool fast_boot = !strcmp(var.value, "enabled");
 			s_option_fast_boot = fast_boot;
 		}
+
+		var.key = "pcsx2_ilink";
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+			s_option_ilink = !strcmp(var.value, "enabled");
 
 		var.key = "pcsx2_fastcdvd";
 		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -1415,6 +1426,10 @@ static void check_variables(bool first_run)
 		{
 			const bool ee_interpreter = !strcmp(var.value, "Interpreter");
 			s_option_config.Cpu.Recompiler.EnableEE = !ee_interpreter;
+			/* The IOP PC hooks (a debugging aid) exist only in the IOP
+			 * interpreter, so asking for them selects it. */
+			if (getenv("LRPS2_IOP_PCHOOK"))
+				s_option_config.Cpu.Recompiler.EnableIOP = false;
 			if (ee_interpreter)
 			{
 				s_option_config.Cpu.Recompiler.EnableFastmem = false;
@@ -1951,6 +1966,7 @@ extern "C" void pcsx2_jithash_dump(void);
 
 void retro_deinit(void)
 {
+	FWlinkDetach();
 	pcsx2_jithash_dump();
 	free_output_audio_buffer();
 	// WIN32 doesn't allow canceling threads from global constructors/destructors in a shared library.
@@ -2386,6 +2402,14 @@ void retro_init(void)
 		log_cb = fallback_log;
 
 	vu1Thread.Reset();
+
+	/* The experimental number first, then the plain one a frontend that has
+	 * adopted the interface will answer to. */
+	memset(&s_link_iface, 0, sizeof(s_link_iface));
+	s_link_interface = NULL;
+	if (environ_cb(RETRO_ENVIRONMENT_GET_LINK_INTERFACE, &s_link_iface) ||
+	    environ_cb(RETRO_ENVIRONMENT_GET_LINK_INTERFACE_FINAL, &s_link_iface))
+		s_link_interface = &s_link_iface;
 
 	if (setting_bios.empty())
 	{
@@ -2828,6 +2852,10 @@ bool retro_load_game(const struct retro_game_info* game)
 		cpu_thread_boot_ec_inited = true;
 	}
 	cpu_thread_boot_params = boot_params;
+	/* On the bus before the machine runs, so the i.LINK ID the game reads at
+	 * boot already carries this console's salt. */
+	if (s_option_ilink && s_link_interface)
+		FWlinkAttach(s_link_interface, 0);
 	cpu_thread = sthread_create_with_stack_size(cpu_thread_entry_trampoline, NULL,
 			VMManager::EMU_THREAD_STACK_SIZE);
 	/* The EE pins itself during Initialize; the handle is for pins made
@@ -2881,6 +2909,11 @@ bool retro_load_game_special(unsigned game_type,
 
 void retro_unload_game(void)
 {
+	/* Off the bus before anything waits on the EE: a console parked on the
+	 * cable waiting for its peer would otherwise hold up the pause below for
+	 * as long as the peer stays away. */
+	FWlinkDetach();
+
 	if (MTGS::IsOpen())
 	{
 		cpu_thread_pause();

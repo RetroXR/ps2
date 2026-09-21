@@ -26,8 +26,52 @@
 static bool branch2 = 0;
 static u32 branchPC;
 
+/* Debug: LRPS2_IOP_PCHOOK=addr=name[,addr=name...] logs every time the
+ * interpreter reaches one of those addresses, with a0-a3. The interpreter
+ * only (LRPS2_NO_IOPREC=1): it is for seeing what a driver is asked to do. */
+static int s_pchook_n = -1;
+static u32 s_pchook_addr[16];
+static char s_pchook_name[16][32];
+
+static void pchook_init(void)
+{
+	const char* s = getenv("LRPS2_IOP_PCHOOK");
+	s_pchook_n = 0;
+	while (s && *s && s_pchook_n < 16)
+	{
+		char* end;
+		size_t i = 0;
+		s_pchook_addr[s_pchook_n] = (u32)strtoul(s, &end, 16);
+		if (*end != '=')
+			break;
+		s = end + 1;
+		while (*s && *s != ',' && i < sizeof(s_pchook_name[0]) - 1)
+			s_pchook_name[s_pchook_n][i++] = *s++;
+		s_pchook_name[s_pchook_n][i] = 0;
+		s_pchook_n++;
+		if (*s == ',')
+			s++;
+	}
+}
+
+static void pchook_check(void)
+{
+	for (int i = 0; i < s_pchook_n; i++)
+		if (psxRegs.pc == s_pchook_addr[i] && log_cb)
+			log_cb(RETRO_LOG_INFO, "[PC] %s a0=%08x a1=%08x a2=%08x a3=%08x ra=%08x\n", s_pchook_name[i],
+				psxRegs.GPR.n.a0, psxRegs.GPR.n.a1, psxRegs.GPR.n.a2, psxRegs.GPR.n.a3, psxRegs.GPR.n.ra);
+}
+
 static __fi void execI(void)
 {
+	if (s_pchook_n)
+	{
+		if (s_pchook_n < 0)
+			pchook_init();
+		if (s_pchook_n)
+			pchook_check();
+	}
+
 	// Inject IRX hack
 	if (psxRegs.pc == 0x1630 && strlen(EmuConfig.CurrentIRX) > 3)
 	{

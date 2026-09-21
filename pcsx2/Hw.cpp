@@ -735,7 +735,13 @@ void hwWrite8(u32 mem, u8 value)
 
 		if ((sio_count == C89_ARRAY_SIZE(sio_buffer)-1) || (sio_count != 0 && sio_buffer[sio_count-1] == '\n'))
 		{
+			/* Opt-in: the EE's own console output, as the IOP's is. */
+			static int s_ee_stdout = -1;
 			sio_buffer[sio_count]   = 0;
+			if (s_ee_stdout < 0)
+				s_ee_stdout = getenv("LRPS2_EE_STDOUT") != NULL;
+			if (s_ee_stdout && log_cb)
+				log_cb(RETRO_LOG_INFO, "[EE] %s", sio_buffer);
 			sio_count               = 0;
 		}
 		return;

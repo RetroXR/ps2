@@ -87,6 +87,8 @@ mem8_t iopHwRead8_Page8( u32 addr )
 {
 	if (addr == HW_SIO2_FIFO)
 		return sio2.Read();
+	if ((addr & 0x0fff) >= 0x400 && (addr & 0x0fff) < 0x580)
+		return FWread8(addr);
 	return psxHu8(addr);
 }
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -292,6 +294,8 @@ mem16_t iopHwRead16_Page3( u32 addr )
 //
 mem16_t iopHwRead16_Page8( u32 addr )
 {
+	if ((addr & 0x0fff) >= 0x400 && (addr & 0x0fff) < 0x580)
+		return FWread16(addr);
 	return psxHu16(addr);
 }
 

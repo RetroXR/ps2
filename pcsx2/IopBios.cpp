@@ -1062,6 +1062,19 @@ namespace R3000A
 			{
 				char s[PCSX2_PATH_MAX];
 				Ra1_BUF(s);
+				/* Opt-in: the IOP's stdout is otherwise discarded, and a
+				 * driver's own trace is the fastest way to see what it wants. */
+				static int s_iop_stdout = -1;
+				if (s_iop_stdout < 0)
+					s_iop_stdout = getenv("LRPS2_IOP_STDOUT") != NULL;
+				if (s_iop_stdout && log_cb)
+				{
+					const u32 n = count < sizeof(s) - 1 ? count : (u32)(sizeof(s) - 1);
+					for (u32 i = 0; i < n; i++)
+						s[i] = (char)iopMemRead8(data + i);
+					s[n] = 0;
+					log_cb(RETRO_LOG_INFO, "[IOP] %s", s);
+				}
 				pc = ra;
 				v0 = a2;
 				return 1;
@@ -1092,6 +1105,69 @@ namespace R3000A
 			iopMemWrite32(sp + 4, a1);
 			iopMemWrite32(sp + 8, a2);
 			iopMemWrite32(sp + 12, a3);
+
+			/* Opt-in, as for stdout: format the message ourselves. The
+			 * arguments now sit contiguously from sp, the format first. */
+			static int s_iop_kprintf = -1;
+			if (s_iop_kprintf < 0)
+				s_iop_kprintf = getenv("LRPS2_IOP_STDOUT") != NULL;
+			if (s_iop_kprintf && log_cb)
+			{
+				char out[1024];
+				size_t o = 0;
+				u32 fmt = a0, argp = sp + 4;
+				for (int guard = 0; guard < 512 && o < sizeof(out) - 64; guard++)
+				{
+					char c = (char)iopMemRead8(fmt++);
+					if (!c)
+						break;
+					if (c != '%')
+					{
+						out[o++] = c;
+						continue;
+					}
+					char spec[16];
+					size_t s = 0;
+					spec[s++] = '%';
+					for (;;)
+					{
+						c = (char)iopMemRead8(fmt++);
+						if (!c || s >= sizeof(spec) - 2)
+							break;
+						if (c == 'l' || c == 'h')
+							continue;
+						spec[s++] = c;
+						if (strchr("diuxXcspo%", c))
+							break;
+					}
+					spec[s] = 0;
+					if (!c)
+						break;
+					if (c == '%')
+						out[o++] = '%';
+					else if (c == 's')
+					{
+						char str[256];
+						u32 p = iopMemRead32(argp);
+						size_t i = 0;
+						argp += 4;
+						while (i < sizeof(str) - 1 && p && (str[i] = (char)iopMemRead8(p + i)))
+							i++;
+						str[i] = 0;
+						o += snprintf(out + o, sizeof(out) - o, spec, str);
+					}
+					else
+					{
+						u32 v = iopMemRead32(argp);
+						argp += 4;
+						o += snprintf(out + o, sizeof(out) - o, spec, v);
+					}
+					if (o >= sizeof(out))
+						o = sizeof(out) - 1;
+				}
+				out[o] = 0;
+				log_cb(RETRO_LOG_INFO, "[IOP] %s", out);
+			}
 			pc = ra;
 
 			return 1;

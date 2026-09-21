@@ -21,10 +21,23 @@ void FWopen(void);
 
 void FWclose(void);
 
-void PHYWrite(void);
-
-void PHYRead(void);
-
 u32 FWread32(u32 addr);
 
 void FWwrite32(u32 addr, u32 value);
+
+u16 FWread16(u32 addr);
+u8 FWread8(u32 addr);
+void FWwrite16(u32 addr, u16 value);
+void FWwrite8(u32 addr, u8 value);
+
+/* The IOP event that paces the controller and the cable. */
+void fwInterrupt(void);
+
+struct retro_link_interface;
+/* Join the frontend's link bus, which is the i.LINK cable. Safe whether or
+ * not anything is ever cabled to this console. */
+void FWlinkAttach(const struct retro_link_interface* link, unsigned port);
+void FWlinkDetach(void);
+/* Nonzero while on a cable: mixed into the i.LINK ID so two consoles reading
+ * one NVRAM still have distinct EUI-64s. */
+u32 FWlinkIdSalt(void);

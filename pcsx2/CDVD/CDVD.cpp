@@ -37,6 +37,7 @@
 
 #include "Ps1CD.h"
 #include "CDVD.h"
+#include "../FW.h"
 
 #include <compat/fnmatch.h>
 #include "CDVD_internal.h"
@@ -2281,6 +2282,14 @@ static void cdvdWrite16(u8 rt) // SCOMMAND
 				cdvd.SCMDResultBuff[6] = 0xFF;
 				cdvd.SCMDResultBuff[7] = 0xB9;
 				cdvd.SCMDResultBuff[8] = 0x86;
+			}
+			/* On an i.LINK cable every console needs its own ID, and two
+			 * emulated consoles usually share one NVRAM. */
+			if (const u32 salt = FWlinkIdSalt())
+			{
+				cdvd.SCMDResultBuff[4] ^= (u8)salt;
+				cdvd.SCMDResultBuff[5] ^= (u8)(salt >> 8);
+				cdvd.SCMDResultBuff[6] ^= (u8)(salt >> 16);
 			}
 			break;
 
