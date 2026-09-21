@@ -2390,13 +2390,21 @@ void retro_init(void)
 	if (setting_bios.empty())
 	{
 		const char* system_base = nullptr;
-		environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_base);
+		const bool have_system_directory =
+			environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_base) && system_base && system_base[0];
 
 		FileSystem::FindResultsArray results;
 		char bios_dir[PCSX2_PATH_MAX];
 
-		pcsx2_path_join(bios_dir, sizeof(bios_dir), system_base, "pcsx2/bios");
-		if (FileSystem::FindFiles(bios_dir, "*", FILESYSTEM_FIND_FILES, &results))
+		if (!have_system_directory)
+		{
+			if (log_cb)
+				log_cb(RETRO_LOG_ERROR, "Frontend did not provide a PS2 system directory.\n");
+		}
+		else
+			pcsx2_path_join(bios_dir, sizeof(bios_dir), system_base, "pcsx2/bios");
+
+		if (have_system_directory && FileSystem::FindFiles(bios_dir, "*", FILESYSTEM_FIND_FILES, &results))
 		{
 			u32 version, region;
 			static constexpr u32 MIN_BIOS_SIZE = 4 * _1mb;
@@ -2557,7 +2565,12 @@ bool retro_load_game(const struct retro_game_info* game)
 	int format = RETRO_PIXEL_FORMAT_XRGB8888;
 
 	environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format);
-	environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_base);
+	if (!environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_base) || !system_base || !system_base[0])
+	{
+		if (log_cb)
+			log_cb(RETRO_LOG_ERROR, "Cannot load PS2 content: frontend system directory is unavailable.\n");
+		return false;
+	}
 
 	pcsx2_path_join(EmuFolders::AppRoot, sizeof(EmuFolders::AppRoot),
 			system_base, "pcsx2");

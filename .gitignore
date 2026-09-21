@@ -123,6 +123,7 @@ build*/
 /tests/faultstress/fault_test_tsan
 /tests/faultstress/fault_test.exe
 /tests/ipu/ipu_test
+/tests/usb/guncon2_protocol
 
 # emitter oracle build products
 tests/emitter/emitter_oracle

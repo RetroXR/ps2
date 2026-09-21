@@ -6,6 +6,28 @@ upstream PCSX2 emulation relies on x86-64 recompilers, which do not exist on ARM
 this tree adds arm64 recompilers for the EE and IOP plus the supporting
 infrastructure to run correctly (and reasonably fast) on 64-bit ARM Linux devices.
 
+## GunCon 2 (light gun)
+
+GunCon 2 support through libretro's light-gun input device
+(`RETRO_DEVICE_LIGHTGUN`, frontend device ID `4`), ported from the EmuVR fork
+(webhead2oo9/ps2_emuvr). It supports both PS2 USB ports, runtime controller
+attachment, GunCon buttons and coordinates, offscreen reload, game-specific
+calibration, and simultaneous DualShock 2 input. Time Crisis 3 (USA,
+`SLUS-20645`) was verified in EmuVR.
+
+Select GunCon 2 for player 1 with the frontend's controller UI or configuration:
+
+```ini
+input_libretro_device_p1 = "4"
+```
+
+Use `input_libretro_device_p2 = "4"` only when a game needs a second gun. Gun
+buttons use the frontend's standard light-gun trigger, reload, A/B/C, Start,
+Select and D-pad bindings. Holding Start and Select together fires the
+calibration shot (neither button reaches the game while both are held); the
+EmuVR fork used the deprecated light-gun Pause ID for it, which current
+RetroArch reads from the Start bind.
+
 ## Status (arm64)
 
 Verified booting to real in-game content (Mega Man X7 gameplay, Gran Turismo 3

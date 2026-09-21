@@ -29,6 +29,7 @@
 #include "../Host.h"
 #include "../Sio.h"
 #include "../USB/USB.h"
+#include "../USB/libretro-usb/usb-guncon2.h"
 
 #define MODE_DIGITAL	0x41
 #define MODE_ANALOG	0x73
@@ -362,17 +363,35 @@ namespace Input
 		{ port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X, "Right Analog X" }, \
 		{ port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y, "Right Analog Y" }
 
+#define GUN_DESC(port) \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_X, "GunCon 2 X" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_Y, "GunCon 2 Y" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_IS_OFFSCREEN, "GunCon 2 Offscreen" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_TRIGGER, "GunCon 2 Trigger" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_RELOAD, "GunCon 2 Reload" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_AUX_A, "GunCon 2 A" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_AUX_B, "GunCon 2 B" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_AUX_C, "GunCon 2 C" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_START, "GunCon 2 Start" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SELECT, "GunCon 2 Select" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_DPAD_UP, "GunCon 2 D-Pad Up" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_DPAD_DOWN, "GunCon 2 D-Pad Down" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_DPAD_LEFT, "GunCon 2 D-Pad Left" }, \
+		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_DPAD_RIGHT, "GunCon 2 D-Pad Right" }
+
 		/* Only ports 0 and 1 are actually polled in Update() and only
 		 * pads[0..1][0..3] are wired through PAD/SIO. Advertising 8
 		 * descriptor ports while polling 2 confuses the frontend's
 		 * input UI: ports 2-7 show up as bindable but never read. */
 		struct retro_input_descriptor desc[] = {
 			JOY_DESC(0), JOY_DESC(1),
+			GUN_DESC(0), GUN_DESC(1),
 			{},
 		};
 
 		static const struct retro_controller_description port_devices[] = {
 			{ "DualShock 2", RETRO_DEVICE_JOYPAD },
+			{ "GunCon 2", RETRO_DEVICE_LIGHTGUN },
 			{ "USB Keyboard", RETRO_DEVICE_KEYBOARD },
 			{ "USB Mouse", RETRO_DEVICE_MOUSE },
 			{ "USB Keyboard + Mouse", RETRO_DEVICE_KEYBOARD_AND_MOUSE },
@@ -380,8 +399,8 @@ namespace Input
 		};
 
 		static const struct retro_controller_info ports[] = {
-			{ port_devices, sizeof(port_devices) / sizeof(*port_devices) },
-			{ port_devices, sizeof(port_devices) / sizeof(*port_devices) },
+			{ port_devices, (sizeof(port_devices) / sizeof(*port_devices)) - 1 },
+			{ port_devices, (sizeof(port_devices) / sizeof(*port_devices)) - 1 },
 			{},
 		};
 
@@ -391,12 +410,14 @@ namespace Input
 
 		retro_atomic_store_release_int(&button_mask[0], (int)0xFFFFFFFF);
 		retro_atomic_store_release_int(&button_mask[1], (int)0xFFFFFFFF);
+		usb_guncon2::ResetAllInputs();
 	}
 
 	void Shutdown()
 	{
 		retro_atomic_store_release_int(&button_mask[0], (int)0xFFFFFFFF);
 		retro_atomic_store_release_int(&button_mask[1], (int)0xFFFFFFFF);
+		usb_guncon2::ResetAllInputs();
 	}
 
 	void Update()
@@ -405,6 +426,9 @@ namespace Input
 
 		for (unsigned port = 0; port < 2; port++)
 		{
+			if (pad_type[port] == RETRO_DEVICE_LIGHTGUN)
+				usb_guncon2::UpdateInput(port, input_cb);
+
 			u32 mask            = input_cb(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);
 			u32 new_button_mask = 0xFFFF0000;
 			u32 btn_index       = 0;
@@ -477,15 +501,25 @@ static const char* s_pad_type_name[NUM_CONTROLLER_PORTS];
 
 void retro_set_controller_port_device(unsigned port, unsigned device)
 {
+	if (port >= 2)
+		return;
+
 	if (pad_type[port] != (int)device)
 	{
 		pad_type[port] = device;
+		usb_guncon2::ResetInput(port);
 
 		switch (device)
 		{
 			case RETRO_DEVICE_JOYPAD:
 				s_pad_type_name[port] = "DualShock2";
 				USBSetPortDevice(port, USB_DEV_NONE, port);
+				break;
+			case RETRO_DEVICE_LIGHTGUN:
+				/* The GunCon is a USB peripheral, so it does not displace the
+				 * emulated SIO DualShock 2. */
+				s_pad_type_name[port] = "DualShock2";
+				USBSetPortDevice(port, USB_DEV_GUNCON2, port);
 				break;
 			case RETRO_DEVICE_KEYBOARD:
 				/* USB HID keyboard coexists with the DualShock on this slot,

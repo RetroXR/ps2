@@ -76,6 +76,7 @@ enum UsbPortDevice
 	USB_DEV_NONE = 0,
 	USB_DEV_KEYBOARD,
 	USB_DEV_MOUSE,
+	USB_DEV_GUNCON2,
 };
 
 void USBSetPortDevice(unsigned port, int device, unsigned input_port);

@@ -790,6 +790,9 @@ set(pcsx2USBSources
 	USB/libretro-usb/desc.cpp
 	USB/libretro-usb/hid.cpp
 	USB/libretro-usb/input-keymap-qcode-to-qnum.cpp
+	USB/libretro-usb/usb-guncon2-protocol.cpp
+	USB/libretro-usb/usb-guncon2-input.cpp
+	USB/libretro-usb/usb-guncon2.cpp
 	USB/libretro-usb/usb-hid.cpp
 	USB/libretro-usb/usb-ohci.cpp
 	USB/shared/ringbuffer.cpp
@@ -802,6 +805,8 @@ set(pcsx2USBHeaders
 	USB/libretro-usb/input-keymap.h
 	USB/libretro-usb/qusb.h
 	USB/libretro-usb/queue.h
+	USB/libretro-usb/usb-guncon2-protocol.h
+	USB/libretro-usb/usb-guncon2.h
 	USB/libretro-usb/usb-hid.h
 	USB/shared/ringbuffer.h
 )
