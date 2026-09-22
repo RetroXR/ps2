@@ -58,8 +58,16 @@ static void pchook_check(void)
 {
 	for (int i = 0; i < s_pchook_n; i++)
 		if (psxRegs.pc == s_pchook_addr[i] && log_cb)
-			log_cb(RETRO_LOG_INFO, "[PC] %s a0=%08x a1=%08x a2=%08x a3=%08x ra=%08x\n", s_pchook_name[i],
-				psxRegs.GPR.n.a0, psxRegs.GPR.n.a1, psxRegs.GPR.n.a2, psxRegs.GPR.n.a3, psxRegs.GPR.n.ra);
+		{
+			/* And the first words a1 points at, which is where an RPC's
+			 * payload or a request structure usually is. */
+			u32 w[8];
+			for (int k = 0; k < 8; k++)
+				w[k] = (psxRegs.GPR.n.a1 & 0x1fffff) + k * 4 < 0x200000 ? iopMemRead32((psxRegs.GPR.n.a1 & 0x1ffffc) + k * 4) : 0;
+			log_cb(RETRO_LOG_INFO, "[PC] %s a0=%08x a1=%08x a2=%08x a3=%08x ra=%08x | %08x %08x %08x %08x %08x %08x %08x %08x\n",
+				s_pchook_name[i], psxRegs.GPR.n.a0, psxRegs.GPR.n.a1, psxRegs.GPR.n.a2, psxRegs.GPR.n.a3,
+				psxRegs.GPR.n.ra, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+		}
 }
 
 static __fi void execI(void)

@@ -272,6 +272,7 @@ enum
 	MSG_PACKET      /* word1: speed; word2: quadlet count; then the quadlets   */
 };
 #define STATE_LINK_ON 1
+#define STATE_PHT1    2   /* PHT1 is taking block writes: they are acked complete */
 
 /* ---- state ---- */
 
@@ -446,6 +447,19 @@ static fw_event* fw_queue(u64 tick, int type)
 
 static bool fw_link_on(void) { return (fw.phy[4] & PHY4_LCTRL) != 0; }
 
+/* PHT1 set up for receiving -- EnDMAS with the header kept (IHdr), as Sony's
+ * driver arms it after every bus reset -- takes incoming block write requests
+ * into DBUF1 in hardware and acknowledges them complete: no response follows,
+ * and the driver, reading a packet out of that FIFO, knows it needs none.
+ * That is what lets two consoles write to each other at the same moment:
+ * with both requests left pending, each driver holds its response back until
+ * its own write is answered, and both wait out the split timeout. */
+#define PHT1_RX_BITS (0x00400000u | 0x00001000u)
+static bool fw_pht1_takes_writes(void)
+{
+	return (FW_REG(R_PHT_CTRL1) & PHT1_RX_BITS) == PHT1_RX_BITS;
+}
+
 static unsigned fw_bus_nodes(void)
 {
 	if (cable.attached && cable.self >= 0 && cable.peers >= 2)
@@ -555,7 +569,7 @@ static void cable_announce(void)
 		if ((int)i != cable.self && !cable.peer_heard[i])
 			deaf = true;
 	w[0] = MSG_STATE;
-	w[1] = fw_link_on() ? STATE_LINK_ON : 0;
+	w[1] = (fw_link_on() ? STATE_LINK_ON : 0) | (fw_pht1_takes_writes() ? STATE_PHT1 : 0);
 	w[2] = deaf ? 1 : 0;
 	cable_send(fw_clock(), w, 3);
 	cable.announced = true;
@@ -707,6 +721,16 @@ static u32 fw_send_wire(const u32* q, unsigned n, u32 speed, u64 now, const char
 		ack = ACK_MISSING;
 	else
 		ack = tcode_is_response(tcode) ? ACK_COMPLETE : ACK_PENDING;
+	/* A block write the receiver's PHT1 takes is complete on arrival. What the
+	 * receiver said of its PHT1 decides; before it has said anything, this
+	 * node's own is the best guess, every node being this controller. */
+	if (reachable && !broadcast && tcode == 1)
+	{
+		bool takes = cable.peer_heard[dest_phy] ? (cable.peer_flags[dest_phy] & STATE_PHT1) != 0
+		                                        : fw_pht1_takes_writes();
+		if (takes)
+			ack = ACK_COMPLETE;
+	}
 
 	if (reachable)
 	{
@@ -806,6 +830,24 @@ static void pht_step(void)
 		fw.pht.cur_bytes = size;
 
 		ack = fw_send_wire(q, 4 + quads, fw.pht.speed, now, "pht tx");
+		if (ack == ACK_COMPLETE)
+		{
+			/* A unified transaction: nothing comes back, and the next packet
+			 * (or the end of the transfer) follows at once. */
+			fw.pht.remaining -= size < fw.pht.remaining ? size : fw.pht.remaining;
+			if (fw.pht.off_lo + size < fw.pht.off_lo)
+				fw.pht.off_hi++;
+			fw.pht.off_lo += size;
+			FW_REG(R_DTRANS0) = (FW_REG(R_DTRANS0) & ~0xffffu) | fw.pht.remaining;
+			FW_REG(R_PHT_CTRL0) = (FW_REG(R_PHT_CTRL0) & ~PHT_STATUS) | ACK_COMPLETE << 4;
+			if (!fw.pht.remaining)
+			{
+				fw.pht.active = false;
+				fw_raise(INTR0_PBCNTR, 0);
+				return;
+			}
+			continue;
+		}
 		if (ack != ACK_PENDING)
 		{
 			/* Nobody acknowledged it: the PHT stops, and the driver reads the
@@ -907,6 +949,21 @@ static void fw_receive(const u32* q, unsigned n, u32 speed)
 		return;
 	if (pht_response(q, n))
 		return;
+	if (((q[0] >> 4) & 0xf) == 1 && dest_phy != 63 && fw_pht1_takes_writes())
+	{
+		if (fw.dbuf_rx[1].count + n + 1 > FIFO_QUADS)
+		{
+			if (log_cb)
+				log_cb(RETRO_LOG_WARN, "i.LINK: DBUF1 full, block write dropped\n");
+			return;
+		}
+		for (i = 0; i < n; i++)
+			fifo_push(&fw.dbuf_rx[1], q[i]);
+		fifo_push(&fw.dbuf_rx[1], (speed & 7) << 16);
+		fw_raise(INTR0_DRFR, 0);
+		il_dump("rx pht1", q, n, fw_clock());
+		return;
+	}
 	if (fw.ubuf_rx.count + n + 1 > FIFO_QUADS)
 	{
 		if (log_cb)
@@ -1185,7 +1242,7 @@ static void fw_phy_write(unsigned reg, u8 data)
 	switch (reg)
 	{
 		case 1:
-			fw.phy[1] = (u8)((fw.phy[1] & 0x80) | (data & 0x3f));
+			fw.phy[1] = (u8)(data & ~PHY1_IBR); /* RHB and the gap count; IBR only triggers */
 			if (data & PHY1_IBR)
 				fw_initiate_bus_reset();
 			break;
@@ -1472,8 +1529,16 @@ void FWwrite32(u32 addr, u32 value)
 				pht_start(value);
 			break;
 		case R_PHT_CTRL1:
+		{
+			bool was = fw_pht1_takes_writes();
 			FW_REG(off) = value & ~PHT_RST;
+			if (value & PHT_RST)
+				fifo_clear(&fw.dbuf_rx[1]);
+			/* Peers decide the ack for their writes from this: tell them. */
+			if (was != fw_pht1_takes_writes() && cable.attached && cable.peers >= 2)
+				cable_announce();
 			break;
+		}
 		case R_DBUF_TX0:
 			fifo_push(&fw.dbuf_tx0, value);
 			pht_step();

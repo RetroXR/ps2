@@ -39,11 +39,24 @@ the other the right (Robert), and linked Story Mode plays with each console
 showing its own player's view. The option is `pcsx2_ilink` (on by default); a
 frontend without the link interface sees a port with nothing plugged in.
 
+Also verified with Gran Turismo 3 A-spec (USA, v1.10), up to its maximum of six
+consoles on one bus: each gets its Console ID in i.LINK Battle, the consoles
+that choose Compete race one another on the same track with their positions
+live, and the others show the race from trackside. GT3's driver
+(Polyphony's `PDI1394.IRX`, on Sony's `ILINK.IRX`) only learns who is on the bus
+from a bus reset that happens after it has started; a console that joined the
+cable while still booting and saw no reset afterwards finds nobody there, and
+leaves i.LINK Battle (or, with others on the bus, waits on its Console ID
+screen). Plug the cable in -- or unplug and replug it -- once every console is
+past the title screen, as you would with real consoles.
+
 The controller at 0x1F808400 was a register stub. It is now modelled from what
 the drivers games ship with -- Sony's `ILINK.IRX` and the ps2sdk's iLinkman --
 actually use: the PHY registers and its register-0 report, bus reset and the
 self-ID phase (into DBUF0), asynchronous packets through the UBUF, the PHT0
-block-write engine that `ILSOCK.IRX` sends datagrams with, the cycle timer and
+block-write engine that `ILSOCK.IRX` sends datagrams with, PHT1 taking block
+writes into DBUF1 (acked complete, so two consoles can write to each other at
+once, which GT3 does every frame), the cycle timer and
 its second interrupt. Every console on the cable is a node; the bus index is
 its physical ID and the highest is root. The ack a packet earns is decided at
 the sender (every node is this same controller), so a transmit completes on
@@ -388,7 +401,7 @@ These work on every architecture:
 | `LRPS2_FW_LOG=1` | Every i.LINK controller register access, with the IOP pc (implies `LRPS2_ILINK_LOG`) |
 | `LRPS2_IOP_STDOUT=1` / `LRPS2_EE_STDOUT=1` | Log the IOP's stdout and `Kprintf`, and the EE's SIO console, which are otherwise discarded |
 | `LRPS2_IOP_POKE=addr=val[,...]` | Write IOP words (hex) on every i.LINK register access -- how a driver's own debug switches get turned on |
-| `LRPS2_IOP_PCHOOK=addr=name[,...]` | Log a0-a3 each time the IOP reaches those addresses (selects the IOP interpreter) |
+| `LRPS2_IOP_PCHOOK=addr=name[,...]` | Log a0-a3, ra and the first eight words at a1 each time the IOP reaches those addresses (needs the IOP interpreter, `LRPS2_NO_IOPREC=1`) |
 | `LRPS2_IOP_DUMP=<path>` | Write IOP RAM out as the machine stops (`<path>.<bus index>` on a cable) |
 
 ## Measured and rejected
