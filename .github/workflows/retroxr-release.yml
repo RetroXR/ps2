@@ -1,0 +1,287 @@
+# Build the retroXR LRPS2 (PlayStation 2) libretro core for Windows, Android,
+# Linux and macOS and publish it as a release, so retroXR's CoreDownloadManager
+# can fetch it.
+#
+# What this fork carries over upstream libretro/ps2 that retroXR needs:
+#
+#   - i.LINK (IEEE 1394). pcsx2/FW.cpp models the console's link controller on
+#     the frontend's link bus (RETRO_ENVIRONMENT_GET_LINK_INTERFACE, protocol
+#     "ps2-ilink-1394", core option pcsx2_ilink): Gran Turismo 3's i.LINK
+#     Battle, up to six consoles, and Time Crisis II's cooperative mode.
+#   - A native AArch64 port (pcsx2/arm64/), which is what makes an Android /
+#     Quest build possible at all.
+#
+#   Windows  pcsx2_libretro.dll.zip             containing pcsx2_libretro.dll
+#   Android  pcsx2_libretro_android.so.zip      containing pcsx2_libretro_android.so
+#   Linux    pcsx2_libretro.so.zip              containing pcsx2_libretro.so
+#   macOS    pcsx2_libretro_arm64.dylib.zip
+#            pcsx2_libretro_x86_64.dylib.zip
+#              each containing pcsx2_libretro.dylib
+#
+# The flags mirror .gitlab-ci.yml, the libretro buildbot's recipe for this
+# tree: CMake Release everywhere, MSVC on Windows, the smoke gate on the two
+# native desktop runners, -msse4.1 for the Intel macOS slice.
+#
+# The release must NOT be a prerelease: the download URL is the /releases/latest/
+# form so shipping a build needs no app update, and GitHub's `latest` skips
+# prereleases. Anything else cut on this fork should be marked prerelease.
+name: retroXR core release
+
+on:
+  push:
+    tags:
+      - 'retroxr-pcsx2-libretro-v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA to build'
+        required: true
+        default: 'retroxr'
+      tag:
+        description: 'Release tag to publish as (leave blank to build without publishing)'
+        required: false
+        default: ''
+
+env:
+  CORE_ARGS: -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.18
+
+jobs:
+  windows:
+    name: Windows x86_64 (MSVC)
+    runs-on: windows-2022
+    steps:
+      - name: Long paths
+        run: git config --system core.longpaths true
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # The smoke gate loads the core it just linked and runs init, a load
+      # without a BIOS and deinit: a crash there fails the build.
+      - name: Build
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja $CORE_ARGS -DLRPS2_SMOKE_GATE=ON
+          cmake --build build
+
+      - name: Package
+        shell: bash
+        run: |
+          mapfile -t hits < <(find build -name 'pcsx2_libretro.dll' -type f)
+          if [ "${#hits[@]}" -ne 1 ]; then
+            echo "expected exactly one pcsx2_libretro.dll, found ${#hits[@]}:"
+            printf '  %s\n' "${hits[@]}"
+            exit 1
+          fi
+          mkdir -p stage
+          cp "${hits[0]}" stage/pcsx2_libretro.dll
+          (cd stage && 7z a -tzip ../pcsx2_libretro.dll.zip pcsx2_libretro.dll > /dev/null)
+          ls -l stage pcsx2_libretro.dll.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: pcsx2_libretro.dll.zip
+          if-no-files-found: error
+
+  # arm64-v8a only, the one ABI retroXR ships.
+  android:
+    name: Android arm64-v8a
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build unzip zip
+          # Into RUNNER_TEMP, NOT the workspace: checkout clears the workspace.
+          wget -q -O "$RUNNER_TEMP/ndk.zip" https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          echo "ANDROID_NDK=$RUNNER_TEMP/android-ndk-r27d" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja $CORE_ARGS \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_NDK="$ANDROID_NDK" -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 -DANDROID_STL=c++_static
+          cmake --build build
+
+      - name: Package
+        run: |
+          mapfile -t hits < <(find build bin -name 'pcsx2_libretro*.so' -type f 2>/dev/null)
+          if [ "${#hits[@]}" -ne 1 ]; then
+            echo "expected exactly one pcsx2_libretro*.so, found ${#hits[@]}:"
+            printf '  %s\n' "${hits[@]}"
+            exit 1
+          fi
+          mkdir -p stage
+          "$ANDROID_NDK"/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-all \
+            -o stage/pcsx2_libretro_android.so "${hits[0]}"
+          (cd stage && zip -q -X ../pcsx2_libretro_android.so.zip pcsx2_libretro_android.so)
+          file stage/pcsx2_libretro_android.so
+          ls -lh pcsx2_libretro_android.so.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: pcsx2_libretro_android.so.zip
+          if-no-files-found: error
+
+  # The oldest Ubuntu runner: a shared library loads only against a glibc at
+  # least as new as the one it was linked with.
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build zip libgl-dev libegl-dev zlib1g-dev
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja $CORE_ARGS -DLRPS2_SMOKE_GATE=ON
+          cmake --build build
+
+      - name: Package
+        run: |
+          mapfile -t hits < <(find build bin -name 'pcsx2_libretro.so' -type f 2>/dev/null)
+          if [ "${#hits[@]}" -ne 1 ]; then
+            echo "expected exactly one pcsx2_libretro.so, found ${#hits[@]}:"
+            printf '  %s\n' "${hits[@]}"
+            exit 1
+          fi
+          mkdir -p stage
+          strip --strip-all -o stage/pcsx2_libretro.so "${hits[0]}"
+          readelf -d stage/pcsx2_libretro.so | grep NEEDED
+          (cd stage && zip -q -X ../pcsx2_libretro.so.zip pcsx2_libretro.so)
+          file stage/pcsx2_libretro.so
+          ls -lh pcsx2_libretro.so.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: pcsx2_libretro.so.zip
+          if-no-files-found: error
+
+  # Both architectures on one Apple Silicon runner, one per job. The Intel
+  # slice takes -msse4.1, as the buildbot's osx-x64 job does.
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            extra: ''
+          - arch: x86_64
+            extra: '-DARCH_FLAG=-msse4.1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build
+        run: |
+          brew list ninja >/dev/null 2>&1 || brew install ninja
+          cmake -S . -B build -G Ninja $CORE_ARGS \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} ${{ matrix.extra }}
+          cmake --build build
+
+      - name: Package
+        run: |
+          lib=pcsx2_libretro.dylib
+          hits=()
+          while IFS= read -r f; do hits+=("$f"); done < <(find build libretro -name "$lib" -type f 2>/dev/null)
+          if [ "${#hits[@]}" -ne 1 ]; then
+            echo "expected exactly one $lib, found ${#hits[@]}:"
+            printf '  %s\n' "${hits[@]}"
+            exit 1
+          fi
+          lipo -info "${hits[0]}"
+          if [ "$(lipo -archs "${hits[0]}")" != "${{ matrix.arch }}" ]; then
+            echo "$lib is not ${{ matrix.arch }}"
+            exit 1
+          fi
+          otool -L "${hits[0]}"
+          mkdir -p stage
+          cp "${hits[0]}" "stage/$lib"
+          strip -x "stage/$lib"
+          (cd stage && zip -q -X ../pcsx2_libretro_${{ matrix.arch }}.dylib.zip "$lib")
+          ls -lh pcsx2_libretro_${{ matrix.arch }}.dylib.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: pcsx2_libretro_${{ matrix.arch }}.dylib.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [windows, android, linux, macos]
+    if: github.event_name == 'push' || github.event.inputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          ls -lh dist
+          cat > notes.md <<EOF
+          LRPS2 (PlayStation 2) libretro core built for retroXR, from
+          \`$GITHUB_SHA\`.
+
+          Windows x86_64 (MSVC), Android arm64-v8a (NDK, stripped), Linux
+          x86_64 and macOS arm64 and x86_64. The source for these binaries is
+          this tag. LRPS2 is GPL-3.0.
+
+          Over upstream libretro/ps2, this fork carries the **i.LINK** (IEEE
+          1394) port on the frontend's link bus -- protocol \`ps2-ilink-1394\`,
+          core option \`pcsx2_ilink\` -- which retroXR's i.LINK cable and
+          six-port hub drive: Gran Turismo 3's i.LINK Battle, including the
+          three-screen Broadcast set-up, and Time Crisis II's cooperative mode.
+          EOF
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "retroXR LRPS2 (libretro) $TAG" \
+              --notes-file notes.md
+          fi
+          gh release upload "$TAG" \
+            dist/pcsx2_libretro.dll.zip \
+            dist/pcsx2_libretro_android.so.zip \
+            dist/pcsx2_libretro.so.zip \
+            dist/pcsx2_libretro_arm64.dylib.zip \
+            dist/pcsx2_libretro_x86_64.dylib.zip \
+            --repo "$GITHUB_REPOSITORY" --clobber
