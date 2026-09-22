@@ -119,6 +119,11 @@ protected:
 	iopMemoryReserve m_iop;
 	vuMemoryReserve m_vu;
 
+	/* Where main memory and the code cache go: see Memory.cpp. */
+	typedef std::pair<VirtualMemoryManagerPtr, VirtualMemoryManagerPtr> Placement;
+	static Placement PlaceMainAndCode();
+	explicit SysMainMemory(Placement placement);
+
 public:
 	SysMainMemory();
 	~SysMainMemory();

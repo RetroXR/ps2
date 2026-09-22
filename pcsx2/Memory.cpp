@@ -84,12 +84,129 @@ static VirtualMemoryManagerPtr AllocateVirtualMemory(const char* name, size_t si
 	return std::make_shared<VirtualMemoryManager>(name, 0, size);
 }
 
+#if defined(_WIN32)
+static bool HostRegionFree(uptr base, size_t size)
+{
+	MEMORY_BASIC_INFORMATION mbi;
+	uptr p = base;
+	const uptr end = base + size;
+	while (p < end)
+	{
+		if (!VirtualQuery((void*)p, &mbi, sizeof(mbi)) || mbi.State != MEM_FREE)
+			return false;
+		p = (uptr)mbi.BaseAddress + mbi.RegionSize;
+	}
+	return true;
+}
+
+static VirtualMemoryManagerPtr ReserveAt(const char* name, uptr base, size_t size)
+{
+	if (!HostRegionFree(base, size))
+		return nullptr;
+	VirtualMemoryManagerPtr m = std::make_shared<VirtualMemoryManager>(name, base, size, /*upper_bounds=*/0, /*strict=*/true);
+	return m->IsOk() ? m : nullptr;
+}
+#endif
+
+/* Where main memory and the recompilers' code cache go. Generated code reaches
+ * this image's data and functions, and main memory, with 32-bit
+ * displacements, so the code cache has to be within 2 GB of both -- but main
+ * memory only of the code cache: nothing in the image addresses it directly.
+ *
+ * The fixed slots AllocateVirtualMemory tries -- eleven 256 MB steps around
+ * the image -- hold about four machines when several copies of the core share
+ * a process. The loader puts each copy right below the previous one (70 MB
+ * apart here), so their windows overlap almost entirely, and a fifth copy got
+ * an OS-picked code cache out of reach and aborted on its first recompiled
+ * block: six Gran Turismo 3 consoles on one i.LINK bus could not start. Even
+ * packed tightly, six 625 MB pairs do not fit in reach of six images that
+ * close together.
+ *
+ * So the code cache (305 MB) goes as near the image as there is room, in
+ * 16 MB steps outward, and main memory (320 MB) as far beyond it as reach
+ * allows, on the side away from the image, working back in; only failing
+ * that on the near side. The space next to the images is then left for the
+ * other copies' code caches. A range is only asked for once VirtualQuery says
+ * it is free. */
+SysMainMemory::Placement SysMainMemory::PlaceMainAndCode()
+{
+#if defined(_WIN32)
+	HMODULE self = nullptr;
+	if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			(LPCSTR)(void*)&HostRegionFree, &self) && self)
+	{
+		const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)self;
+		const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)((const u8*)self + dos->e_lfanew);
+		const uptr image_start = (uptr)self;
+		const uptr image_end = image_start + nt->OptionalHeader.SizeOfImage;
+		const uptr code_size = HostMemoryMap::CodeSize;
+		const uptr main_size = HostMemoryMap::MainSize;
+		const uptr reach = 0x7C000000; /* 2 GB, less a margin */
+		const uptr step = 0x01000000;
+		const uptr above0 = (image_end + step - 1) & ~(step - 1);
+		const uptr below0 = image_start & ~(step - 1);
+
+		for (uptr d = 0;; d += step)
+		{
+			uptr cand[2];
+			int n = 0;
+			if (above0 + d + code_size - image_start <= reach)
+				cand[n++] = above0 + d;
+			if (below0 >= code_size + d + step && image_end - (below0 - code_size - d) <= reach)
+				cand[n++] = below0 - code_size - d;
+			if (!n)
+				break;
+			for (int i = 0; i < n; i++)
+			{
+				const uptr code = cand[i];
+				const bool below = code < image_start;
+				VirtualMemoryManagerPtr code_mem = ReserveAt(nullptr, code, code_size);
+				if (!code_mem)
+					continue;
+				/* Main memory's base, anywhere in [lo, hi] keeps it in reach
+				 * of the code cache: below it, or above it. */
+				const uptr lo_below = code + code_size > reach + step ? (code + code_size - reach + step - 1) & ~(step - 1) : step;
+				const uptr hi_below = code >= main_size + step ? code - main_size : 0;
+				const uptr lo_above = code + code_size;
+				const uptr hi_above = (code + reach - main_size) & ~(step - 1);
+				/* Far side first, from its far end; then the near side, from
+				 * its near end. Below the image both run upward, above it
+				 * both run downward. */
+				const uptr lo[2] = {below ? lo_below : lo_above, below ? lo_above : lo_below};
+				const uptr hi[2] = {below ? hi_below : hi_above, below ? hi_above : hi_below};
+				for (int side = 0; side < 2; side++)
+				{
+					if (lo[side] > hi[side])
+						continue;
+					for (uptr k = 0; k <= hi[side] - lo[side]; k += step)
+					{
+						const uptr main = below ? lo[side] + k : hi[side] - k;
+						VirtualMemoryManagerPtr main_mem = ReserveAt("pcsx2", main, main_size);
+						if (main_mem)
+							return Placement(main_mem, code_mem);
+					}
+				}
+			}
+		}
+		log_cb(RETRO_LOG_WARN, "No room within reach of the core image for main memory and the code cache; "
+			"falling back to fixed slots\n");
+	}
+#endif
+	return Placement(AllocateVirtualMemory("pcsx2", HostMemoryMap::MainSize, 0),
+		AllocateVirtualMemory(nullptr, HostMemoryMap::CodeSize, HostMemoryMap::MainSize));
+}
+
 // --------------------------------------------------------------------------------------
 //  SysReserveVM  (implementations)
 // --------------------------------------------------------------------------------------
 SysMainMemory::SysMainMemory()
-	: m_mainMemory(AllocateVirtualMemory("pcsx2", HostMemoryMap::MainSize, 0))
-	, m_codeMemory(AllocateVirtualMemory(nullptr, HostMemoryMap::CodeSize, HostMemoryMap::MainSize))
+	: SysMainMemory(PlaceMainAndCode())
+{
+}
+
+SysMainMemory::SysMainMemory(Placement placement)
+	: m_mainMemory(placement.first)
+	, m_codeMemory(placement.second)
 	, m_bumpAllocator(m_mainMemory, HostMemoryMap::bumpAllocatorOffset, HostMemoryMap::MainSize - HostMemoryMap::bumpAllocatorOffset)
 {
 	uptr main_base = (uptr)MainMemory()->GetBase();
