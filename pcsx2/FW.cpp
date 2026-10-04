@@ -192,10 +192,32 @@ static void il_dump(const char* what, const u32* q, unsigned n, u64 tick)
  * on and far above a single instruction, which is all they have to be. */
 #define FW_TX_CYCLES      1024
 #define FW_SELFID_CYCLES  2048
-/* How often the cable meets the other consoles, and how far ahead of itself
- * each console promises not to originate anything. Half a millisecond keeps a
+/* How far ahead of itself each console promises not to originate anything,
+ * which is the longest a packet can take to cross. Half a millisecond keeps a
  * request and its response well inside the default 100 ms split timeout. */
-#define FW_GRAIN_LINKED   (FW_IOP_HZ / 2000)
+#define FW_AHEAD_LINKED   (FW_IOP_HZ / 2000)
+/* How often the cable meets the other consoles: HALF the promise, and the
+ * half is the point.
+ *
+ * A console is granted its next stretch once every other console's promise
+ * reaches the end of it. When the stretch asked for is as long as the promise,
+ * that only holds for a console standing at or behind every other -- and no
+ * two consoles stand at the same tick, since each meets the cable wherever its
+ * own IOP happened to notice the event. So exactly one console could run at a
+ * time: it ran its half millisecond while the rest waited for it, then the
+ * next one did. Three consoles took strict turns, which made three PS2s cost
+ * the host what three run end to end cost, and on Gran Turismo 3's
+ * three-screen Broadcast that was not always real time: unthrottled, the three
+ * averaged 100 fps and fell to 42 in the menus, with the time each spent NOT
+ * parked on the bus adding up to one console's worth (57% + 20% + 20%). Every
+ * second under 60 is a hole in the sound of all three.
+ *
+ * Asking for half the promise leaves the other half as slack: a console is
+ * granted at once while the others are no more than a stretch behind it, so
+ * they all run together and only one that is genuinely ahead waits. Same
+ * three consoles, same script: 162 fps on average and never under 126. The
+ * promise is unchanged, so nothing crosses the wire any later than it did. */
+#define FW_GRAIN_LINKED   (FW_AHEAD_LINKED / 2)
 /* With nobody on the bus the only thing to learn is that somebody arrived. */
 #define FW_GRAIN_ALONE    (FW_IOP_HZ / 60)
 
@@ -1119,12 +1141,14 @@ static bool cable_rendezvous(void)
 	{
 		u64 now = fw_clock();
 		u64 grain = cable.peers >= 2 ? FW_GRAIN_LINKED : FW_GRAIN_ALONE;
+		u64 ahead = cable.peers >= 2 ? FW_AHEAD_LINKED : FW_GRAIN_ALONE;
 
 		/* Published before anything is read: a peer parked on this
 		 * console's horizon cannot move until it has been told the horizon
-		 * moved. */
-		if (now + grain > cable.safe)
-			cable.safe = now + grain;
+		 * moved. The horizon reaches further than the stretch asked for
+		 * below; see FW_GRAIN_LINKED. */
+		if (now + ahead > cable.safe)
+			cable.safe = now + ahead;
 		slock_lock(rv.lock);
 		rv.now = now;
 		rv.safe = cable.safe;
