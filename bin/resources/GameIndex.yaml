@@ -52334,6 +52334,7 @@ SLUS-20152:
     eeRoundMode: 0 # Fixes autopilot being silly and crashing the plane.
   compat: 5
   gsHWFixes:
+    texturePreloading: 1 # Full preload hashes/uploads a changing 1024x1024 FMV texture for every draw.
     recommendedBlendingLevel: 2 # Helps banding when dithering is enabled.
     roundSprite: 1 # Fixes font and HUD artifacts.
     alignSprite: 1 # Fixes vertical lines.

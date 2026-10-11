@@ -116,6 +116,13 @@ int  gs_vk_heap_init(gs_vk_heap_t *heap, VkDevice device,
 
 void gs_vk_heap_shutdown(gs_vk_heap_t *heap);
 
+/* Images scale with resolution; persistent stream buffers do not. Budget
+ * those separately, rounding streams to whole blocks and leaving one more
+ * host-visible block for downloads/alignment. Otherwise the 128 MB streams
+ * consume most of the native-resolution image budget before drawing. */
+VkDeviceSize gs_vk_heap_budget(VkDeviceSize block_size,
+      VkDeviceSize image_bytes, VkDeviceSize stream_bytes);
+
 /* Takes blocks from the driver now, so that later allocations of this
  * kind are offsets. type_bits and flags are as a VkMemoryRequirements
  * would give. Returns the number of blocks taken. */

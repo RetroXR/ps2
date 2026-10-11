@@ -268,6 +268,60 @@ int main(void)
       gs_vk_heap_shutdown(&t2);
    }
 
+   /* Native-resolution Ace Combat 04: permanent upload buffers occupy
+    * 128 MB plus a small download in a third host block. The old 256 MB
+    * total stranded free bytes there and left just one image block. */
+   {
+      const VkDeviceSize mb = 1024u * 1024u;
+      const VkDeviceSize block = 64u * mb;
+      const VkDeviceSize stream_sizes[] = {64, 32, 16, 8, 8, 2};
+      int pass;
+      CHECK(gs_vk_heap_budget(block, 64u * mb, 128u * mb) == 448u * mb,
+            "native budget includes fixed streams and download block");
+      CHECK(gs_vk_heap_budget(block, 1024u * mb, 128u * mb) == 1216u * mb,
+            "only image budget scales with resolution");
+      for (pass = 0; pass < 2; pass++)
+      {
+         gs_vk_heap_t native;
+         gs_vk_alloc_t streams[6], image, next;
+         const VkDeviceSize budget = pass ? gs_vk_heap_budget(block, 64u * mb, 128u * mb) : 256u * mb;
+         int k;
+         CHECK(gs_vk_heap_init(&native, (VkDevice)1, &props, &fns,
+               block, 256, budget) != 0, "native: init");
+         CHECK(gs_vk_heap_reserve(&native, 0x1u, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 2) == 2,
+               "native: reserve images");
+         CHECK(gs_vk_heap_reserve(&native, 0x2u, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 1) == 1,
+               "native: reserve uploads");
+         req(&r, 60u * mb, 256, 0x1u);
+         CHECK(gs_vk_heap_alloc(&native, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, &image),
+               "native: initial images");
+         for (k = 0; k < 6; k++)
+         {
+            req(&r, stream_sizes[k] * mb, 256, 0x2u);
+            CHECK(gs_vk_heap_alloc(&native, &r, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0, &streams[k]),
+                  "native: fixed streams and download");
+         }
+         req(&r, 8u * mb, 256, 0x1u);
+         CHECK(!!gs_vk_heap_alloc(&native, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, &next) == pass,
+               "native: new budget fits the next image; old budget reproduces failure");
+         CHECK(native.bytes_reserved <= budget, "native: ceiling still enforced");
+         if (pass)
+         {
+            gs_vk_heap_free(&native, &next);
+            allocations = 0;
+            CHECK(gs_vk_heap_alloc(&native, &r, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, &next),
+                  "native: image space reused");
+            CHECK(allocations == 0, "native: no driver allocation on reuse");
+            gs_vk_heap_free(&native, &next);
+         }
+         for (k = 0; k < 6; k++)
+            gs_vk_heap_free(&native, &streams[k]);
+         gs_vk_heap_free(&native, &image);
+         CHECK(native.bytes_used == 0, "native: allocations returned");
+         gs_vk_heap_shutdown(&native);
+      }
+   }
+
    frees = 0;
    gs_vk_heap_shutdown(&heap);
    CHECK(frees > 0, "shutdown gives the blocks back");

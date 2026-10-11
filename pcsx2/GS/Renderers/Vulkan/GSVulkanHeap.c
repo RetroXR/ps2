@@ -5,6 +5,14 @@
 
 #define GS_VK_HEAP_MIN_SPANS 16
 
+VkDeviceSize gs_vk_heap_budget(VkDeviceSize block_size,
+      VkDeviceSize image_bytes, VkDeviceSize stream_bytes)
+{
+   if (image_bytes < block_size * 4u)
+      image_bytes = block_size * 4u;
+   return image_bytes + ((stream_bytes + block_size - 1u) / block_size + 1u) * block_size;
+}
+
 static VkDeviceSize gs_vk_align_up(VkDeviceSize v, VkDeviceSize a)
 {
    if (a <= 1)

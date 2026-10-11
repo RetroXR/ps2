@@ -195,6 +195,24 @@ Compiled pages are write-protected; faults invalidate stale blocks (vtlb `mmap_M
 
 Standard **Vulkan** renderer (`pcsx2_renderer = "Vulkan"`). paraLLEl-GS requires GPU features (8/16-bit storage, small subgroups) that e.g. Adreno 618 lacks
 
+The Vulkan heap budgets fixed stream buffers separately from resolution-scaled
+images. The streams total 128 MB even at 1x; downloads need another host-visible
+block. The former 256 MB total could leave just one 64 MB image block on NVIDIA,
+with free space stranded in upload blocks, causing repeated allocation failures
+and GPU waits during Ace Combat 04's intro. The ceiling is now 448 MB at 1x
+(256 MB for images plus 192 MB for streams/downloads), with blocks still allocated
+on demand. `tests/vkheap` reproduces the old failure and checks that the new
+budget fits the same allocations, reuses released image space and stays bounded.
+
+Ace Combat 04 (NTSC-U, `SLUS-20152`) also caps texture preloading at Partial in
+the game database. Full preloading repeatedly hashes, converts, scans alpha and
+uploads a changing 1024x1024 movie texture. Windows thread samples put that work
+on the GS thread, rather than the IPU decoder. With the heap fix alone the intro
+after New Game > Normal ran at about 17–40 frontend frames/s; Partial restored
+about 60 on an RTX 5070 Laptop GPU. The comparison used a save state at the
+difficulty selection in RetroXR's Vulkan frontend, 1x native resolution; this
+measures that movie, not gameplay. Texture handling for other games is unchanged.
+
 ### MTGS
 
 Works (GS thread active)
