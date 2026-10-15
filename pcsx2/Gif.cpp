@@ -82,7 +82,10 @@ void GIF_Fifo::init()
 
 int GIF_Fifo::write_fifo(u32* pMem, int size)
 {
-	if (fifoSize == 16)
+	/* >= rather than ==: the difference only shows if fifoSize ever exceeds
+	 * 16, which the runtime does not do, but an equality test turns that
+	 * into a negative transfer size rather than a refusal. */
+	if (fifoSize >= 16)
 		return 0;
 
 	int transferSize = pcsx2_min_i(size, 16 - (int)fifoSize);
@@ -145,7 +148,7 @@ static void incGifChAddr(u32 qwc)
 	{
 		gifch.madr += qwc * 16;
 		gifch.qwc -= qwc;
-		hwDmacSrcTadrInc(gifch);
+		hwDmacSrcTadrInc(&gifch);
 	}
 }
 
@@ -355,7 +358,7 @@ static __fi tDMA_TAG* ReadTag(void)
 	gifch.madr      = ptag[1]._u32; // MADR = ADDR field + SPR
 	gif.gscycles   += 2; // Add 1 cycles from the QW read for the tag
 
-	gif.gspath3done = hwDmacSrcChainWithStack(gifch, ptag->ID);
+	gif.gspath3done = hwDmacSrcChainWithStack(&gifch, ptag->ID);
 	return ptag;
 }
 
@@ -614,7 +617,7 @@ void mfifoGIFtransfer(void)
 
 		gif.mfifocycles += 2;
 
-		gif.gspath3done  = hwDmacSrcChainWithStack(gifch, ptag->ID);
+		gif.gspath3done  = hwDmacSrcChainWithStack(&gifch, ptag->ID);
 
 		mfifoGifMaskMem(ptag->ID);
 
@@ -731,14 +734,21 @@ void gifMFIFOInterrupt(void)
 		GifDMAInt(8 * BIAS);
 }
 
-bool SaveStateBase::gifDmaFreeze()
+bool gifDmaFreeze(SaveStateBase *s)
 {
 	// Note: mfifocycles is not a persistent var, so no need to save it here.
-	if (!(FreezeTag("GIFdma")))
+	if (!(SaveState_FreezeTag(s, "GIFdma")))
 		return false;
 
-	Freeze(gif);
-	Freeze(gif_fifo);
+	SaveState_Freeze(s, gif);
+	SaveState_Freeze(s, gif_fifo);
 
-	return IsOkay();
+	/* fifoSize counts quadwords in a 16-entry fifo and the runtime never
+	 * lets it past 16, so write_fifo tests it for equality. A restored 17
+	 * walks straight through that test and makes the transfer size
+	 * negative. */
+	if (SaveState_IsLoading(s) && gif_fifo.fifoSize > 16)
+		gif_fifo.fifoSize = 0;
+
+	return SaveState_IsOkay(s);
 }

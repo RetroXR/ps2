@@ -294,13 +294,6 @@ enum class GSHWAutoFlushLevel : u8
 	Enabled,
 };
 
-enum class GSGPUTargetCLUTMode : u8
-{
-	Disabled,
-	Enabled,
-	InsideTarget,
-};
-
 enum class GSTextureInRtMode : u8
 {
 	Disabled,
@@ -503,6 +496,10 @@ struct Pcsx2Config
 					PreloadFrameWithGSData : 1,
 					Mipmap : 1,
 					ManualUserHacks : 1,
+					/* The native scaling option is set by the user: it is not
+					 * masked with the hacks, and the game database's fix for it
+					 * does not apply. */
+					NativeScalingSet : 1,
 					UserHacks_AlignSpriteX : 1,
 					UserHacks_CPUFBConversion : 1,
 					UserHacks_ReadTCOnClose : 1,
@@ -550,7 +547,6 @@ struct Pcsx2Config
 		u8 UserHacks_CPUSpriteRenderBW = 0;
 		u8 UserHacks_CPUSpriteRenderLevel = 0;
 		u8 UserHacks_CPUCLUTRender = 0;
-		GSGPUTargetCLUTMode UserHacks_GPUTargetCLUTMode = GSGPUTargetCLUTMode::Disabled;
 		GSTextureInRtMode UserHacks_TextureInsideRt = GSTextureInRtMode::Disabled;
 		GSBilinearDirtyMode UserHacks_BilinearHack = GSBilinearDirtyMode::Automatic;
 		GSLimit24BitDepth UserHacks_Limit24BitDepth = GSLimit24BitDepth::Disabled;

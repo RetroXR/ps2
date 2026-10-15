@@ -116,79 +116,123 @@ void ata_write_queue_destroy(ata_write_queue_t* q)
 
 static void ata_io_read(ata_state_t* ata);
 static bool ata_io_write(ata_state_t* ata);
-static void ata_io_sparse_cache_load(ata_state_t* ata);
+static bool ata_io_sparse_cache_load(ata_state_t* ata);
 static void ata_io_sparse_cache_update_location(ata_state_t* ata, uint64_t byteOffset);
 static bool ata_io_sparse_zero(ata_state_t* ata, uint64_t byteOffset, uint64_t byteSize);
 static bool ata_is_all_zero(const void* data, size_t len);
 
+/* ioRead and ioWrite are requests: the EE sets one and announces it on
+ * ioReadyEc, the IO thread clears it once served. ioThreadIdle is set
+ * by the IO thread whenever it is between requests and announced on
+ * ioIdleEc. Neither side takes a lock; each sleeps on its eventcount
+ * only while the flag it waits for is still clear.
+ *
+ * ata_hdd_read_sync() withdraws a pending write and then waits for the
+ * IO thread to be idle, while the IO thread marks itself busy and then
+ * reads which request to serve. Each side stores, fences seq_cst and
+ * loads the other's flag, so either the IO thread sees the write
+ * withdrawn or the EE sees it busy and waits: a write never runs under
+ * the EE's synchronous read. */
+
+static INLINE bool ata_io_pending(ata_state_t* ata)
+{
+	return (retro_atomic_load_acquire_int(&ata->ioRead)
+		| retro_atomic_load_acquire_int(&ata->ioWrite)) != 0;
+}
+
+void ata_io_request(ata_state_t* ata, retro_atomic_int_t* request)
+{
+	retro_atomic_store_release_int(request, 1);
+	retro_eventcount_notify(&ata->ioReadyEc);
+}
+
+static void ata_io_wait_idle(ata_state_t* ata)
+{
+	while (!retro_atomic_load_acquire_int(&ata->ioThreadIdle))
+	{
+		int key = retro_eventcount_prepare_wait(&ata->ioIdleEc);
+		if (retro_atomic_load_acquire_int(&ata->ioThreadIdle))
+		{
+			retro_eventcount_cancel_wait(&ata->ioIdleEc);
+			break;
+		}
+		retro_eventcount_commit_wait(&ata->ioIdleEc, key);
+	}
+}
+
 void ata_io_thread_entry(void* userdata)
 {
 	ata_state_t* ata = (ata_state_t*)userdata;
-	int ioType;
-
-	slock_lock(ata->ioMutex);
-	ata->ioThreadIdle_bool = false;
-	slock_unlock(ata->ioMutex);
 
 	for (;;)
 	{
-		slock_lock(ata->ioMutex);
-		ata->ioThreadIdle_bool = true;
-		scond_broadcast(ata->ioThreadIdle_cv);
+		retro_atomic_store_release_int(&ata->ioThreadIdle, 1);
+		retro_eventcount_notify(&ata->ioIdleEc);
 
-		while (!(ata->ioRead | ata->ioWrite))
-			scond_wait(ata->ioReady, ata->ioMutex);
-		ata->ioThreadIdle_bool = false;
+		while (!ata_io_pending(ata))
+		{
+			int key = retro_eventcount_prepare_wait(&ata->ioReadyEc);
+			if (ata_io_pending(ata))
+			{
+				retro_eventcount_cancel_wait(&ata->ioReadyEc);
+				break;
+			}
+			retro_eventcount_commit_wait(&ata->ioReadyEc, key);
+		}
 
-		ioType = -1;
-		if (ata->ioRead)
-			ioType = 0;
-		else if (ata->ioWrite)
-			ioType = 1;
-
-		slock_unlock(ata->ioMutex);
+		retro_atomic_store_release_int(&ata->ioThreadIdle, 0);
+		retro_atomic_thread_fence_seq_cst();
 
 		/* Read or Write */
-		if (ioType == 0)
+		if (retro_atomic_load_acquire_int(&ata->ioRead))
 			ata_io_read(ata);
-		else if (ioType == 1)
+		else if (retro_atomic_load_acquire_int(&ata->ioWrite))
 		{
-			if (!ata_io_write(ata))
+			if (!ata_io_write(ata) && retro_atomic_load_acquire_int(&ata->ioClose))
 			{
-				if (retro_atomic_load_acquire_int(&ata->ioClose))
-				{
-					retro_atomic_store_release_int(&ata->ioClose, 0);
-					slock_lock(ata->ioMutex);
-					ata->ioThreadIdle_bool = true;
-					slock_unlock(ata->ioMutex);
-					return;
-				}
+				retro_atomic_store_release_int(&ata->ioClose, 0);
+				retro_atomic_store_release_int(&ata->ioThreadIdle, 1);
+				return;
 			}
 		}
 	}
 }
 
+/* A failed access to the image is logged once, until one succeeds. */
+static void ata_io_result(ata_state_t* ata, bool ok, const char* what)
+{
+	if (ok)
+		ata->ioErrorLogged = false;
+	else if (!ata->ioErrorLogged)
+	{
+		ata->ioErrorLogged = true;
+		log_cb(RETRO_LOG_ERROR, "DEV9: ATA: HDD image %s failed\n", what);
+	}
+}
+
+/* A read the host fails reads as zeroes past what it did read, and the
+ * command reports it (ata_hdd_read_failed) instead of handing them over. */
 static void ata_io_read(ata_state_t* ata)
 {
-	const int64_t lba = ata_hdd_get_lba(ata);
-	uint64_t pos;
+	const int64_t lba   = ata_hdd_get_lba(ata);
+	const int64_t bytes = (int64_t)ata->nsector * 512;
+	int64_t got         = -1;
 
-	if (lba == -1)
-	{
-		log_cb(RETRO_LOG_ERROR, "DEV9: ATA: Invalid LBA\n");
-		abort();
-	}
+	if (lba != -1
+	 && filestream_seek(ata->hddImage, lba * 512, RETRO_VFS_SEEK_POSITION_START) >= 0)
+		got = filestream_read(ata->hddImage, ata->readBuffer, bytes);
+	ata->ioReadFailed = got != bytes;
+	if (ata->ioReadFailed)
+		memset(ata->readBuffer + (got > 0 ? got : 0), 0, (size_t)(bytes - (got > 0 ? got : 0)));
+	ata_io_result(ata, !ata->ioReadFailed, "read");
+	retro_atomic_store_release_int(&ata->ioRead, 0);
+}
 
-	pos = (uint64_t)lba * 512;
-	if (filestream_seek(ata->hddImage, (int64_t)pos, RETRO_VFS_SEEK_POSITION_START) < 0 ||
-		filestream_read(ata->hddImage, ata->readBuffer, (int64_t)ata->nsector * 512) != (int64_t)ata->nsector * 512)
-	{
-		log_cb(RETRO_LOG_ERROR, "DEV9: ATA: File read error\n");
-		abort();
-	}
-	slock_lock(ata->ioMutex);
-	ata->ioRead = false;
-	slock_unlock(ata->ioMutex);
+/* A write the host failed: the flush that follows reports it. */
+static void ata_io_write_failed(ata_state_t* ata)
+{
+	retro_atomic_store_release_int(&ata->ioWriteFailed, 1);
+	ata_io_result(ata, false, "write");
 }
 
 static bool ata_io_write(ata_state_t* ata)
@@ -198,17 +242,19 @@ static bool ata_io_write(ata_state_t* ata)
 
 	if (!ata_write_queue_dequeue(&ata->writeQueue, &entry))
 	{
-		slock_lock(ata->ioMutex);
-		ata->ioWrite = false;
-		slock_unlock(ata->ioMutex);
+		/* A swap rather than a store: a request ata_close() set after
+		 * the failed dequeue is read here, and with it the ioClose it
+		 * published first. */
+		retro_atomic_exchange_int(&ata->ioWrite, 0);
 		return false;
 	}
 
 	imagePos = entry.sector * 512;
 	if (filestream_seek(ata->hddImage, (int64_t)imagePos, RETRO_VFS_SEEK_POSITION_START) < 0)
 	{
-		log_cb(RETRO_LOG_ERROR, "DEV9: ATA: File seek error\n");
-		abort();
+		ata_io_write_failed(ata);
+		free(entry.data);
+		return true;
 	}
 	if (ata->hddSparse)
 	{
@@ -252,8 +298,8 @@ static bool ata_io_write(ata_state_t* ata)
 				if (filestream_write(ata->hddImage, &entry.data[written], (int64_t)writeSize) != (int64_t)writeSize ||
 					filestream_flush(ata->hddImage) != 0)
 				{
-					log_cb(RETRO_LOG_ERROR, "DEV9: ATA: File write error\n");
-					abort();
+					ata_io_write_failed(ata);
+					break;
 				}
 			}
 			written += writeSize;
@@ -263,16 +309,16 @@ static bool ata_io_write(ata_state_t* ata)
 	{
 		if (filestream_write(ata->hddImage, entry.data, (int64_t)entry.length) != (int64_t)entry.length ||
 			filestream_flush(ata->hddImage) != 0)
-		{
-			log_cb(RETRO_LOG_ERROR, "DEV9: ATA: File write error\n");
-			abort();
-		}
+			ata_io_write_failed(ata);
+		else
+			ata_io_result(ata, true, "write");
 	}
 	free(entry.data);
 	return true;
 }
 
-static void ata_io_sparse_cache_load(ata_state_t* ata)
+/* False when the block cannot be read; the cache is then not valid. */
+static bool ata_io_sparse_cache_load(ata_state_t* ata)
 {
 	/* Reads are bounds checked, but for the sectors read only.
 	 * Need to bounds check for sparse block, to handle an edge case
@@ -307,12 +353,10 @@ static void ata_io_sparse_cache_load(ata_state_t* ata)
 		filestream_seek(ata->hddImage, (int64_t)ata->HddSparseStart, RETRO_VFS_SEEK_POSITION_START) < 0 ||
 		filestream_read(ata->hddImage, ata->hddSparseBlock, (int64_t)readSize) != (int64_t)readSize ||
 		filestream_seek(ata->hddImage, orgPos, RETRO_VFS_SEEK_POSITION_START) < 0) /* Restore file pointer. */
-	{
-		log_cb(RETRO_LOG_ERROR, "DEV9: ATA: File read error\n");
-		abort();
-	}
+		return false;
 
 	ata->hddSparseBlockValid = true;
+	return true;
 }
 
 static void ata_io_sparse_cache_update_location(ata_state_t* ata, uint64_t byteOffset)
@@ -329,8 +373,9 @@ static void ata_io_sparse_cache_update_location(ata_state_t* ata, uint64_t byteO
 /* Also sets hddImage write ptr. */
 static bool ata_io_sparse_zero(ata_state_t* ata, uint64_t byteOffset, uint64_t byteSize)
 {
-	if (!ata->hddSparseBlockValid)
-		ata_io_sparse_cache_load(ata);
+	/* An unreadable block falls back to plain writes. */
+	if (!ata->hddSparseBlockValid && !ata_io_sparse_cache_load(ata))
+		return false;
 
 	/* Write to cache */
 	memset(&ata->hddSparseBlock[byteOffset - ata->HddSparseStart], 0, byteSize);
@@ -341,10 +386,7 @@ static bool ata_io_sparse_zero(ata_state_t* ata, uint64_t byteOffset, uint64_t b
 		/* No, do normal write */
 		if (filestream_write(ata->hddImage, &ata->hddSparseBlock[byteOffset - ata->HddSparseStart], (int64_t)byteSize) != (int64_t)byteSize ||
 			filestream_flush(ata->hddImage) != 0)
-		{
-			log_cb(RETRO_LOG_ERROR, "DEV9: ATA: File write error\n");
-			abort();
-		}
+			ata_io_write_failed(ata);
 		return true;
 	}
 
@@ -358,10 +400,7 @@ static bool ata_io_sparse_zero(ata_state_t* ata, uint64_t byteOffset, uint64_t b
 		return false;
 
 	if (filestream_seek(ata->hddImage, (int64_t)(byteOffset + byteSize), RETRO_VFS_SEEK_POSITION_START) < 0)
-	{
-		log_cb(RETRO_LOG_ERROR, "DEV9: ATA: File seek error\n");
-		abort();
-	}
+		ata_io_write_failed(ata);
 	return true;
 }
 
@@ -403,10 +442,7 @@ void ata_hdd_read_async(ata_state_t* ata, ata_cmd_fn drqCMD)
 	}
 	ata->waitingCmd = drqCMD;
 
-	slock_lock(ata->ioMutex);
-	ata->ioRead = true;
-	slock_unlock(ata->ioMutex);
-	scond_broadcast(ata->ioReady);
+	ata_io_request(ata, &ata->ioRead);
 }
 
 /* Note, we don't expect both Async & Sync Reads
@@ -415,27 +451,18 @@ void ata_hdd_read_sync(ata_state_t* ata, ata_cmd_fn drqCMD)
 {
 	bool ioWritePaused;
 
-	slock_lock(ata->ioMutex);
-	/* Set ioWrite false to prevent reading & writing at the same time */
-	ioWritePaused = ata->ioWrite;
-	ata->ioWrite = false;
-
-	/* wait until thread waiting */
-	while (!ata->ioThreadIdle_bool)
-		scond_wait(ata->ioThreadIdle_cv, ata->ioMutex);
-	slock_unlock(ata->ioMutex);
+	/* Withdraw any write request to prevent reading & writing at the
+	 * same time, then wait until the IO thread is idle. */
+	ioWritePaused = retro_atomic_exchange_int(&ata->ioWrite, 0) != 0;
+	retro_atomic_thread_fence_seq_cst();
+	ata_io_wait_idle(ata);
 
 	ata->nsectorLeft = 0;
 
 	if (!ata_hdd_can_assess_or_set_error(ata))
 	{
 		if (ioWritePaused)
-		{
-			slock_lock(ata->ioMutex);
-			ata->ioWrite = true;
-			slock_unlock(ata->ioMutex);
-			scond_broadcast(ata->ioReady);
-		}
+			ata_io_request(ata, &ata->ioWrite);
 		return;
 	}
 
@@ -452,14 +479,21 @@ void ata_hdd_read_sync(ata_state_t* ata, ata_cmd_fn drqCMD)
 	ata_io_read(ata);
 
 	if (ioWritePaused)
-	{
-		slock_lock(ata->ioMutex);
-		ata->ioWrite = true;
-		slock_unlock(ata->ioMutex);
-		scond_broadcast(ata->ioReady);
-	}
+		ata_io_request(ata, &ata->ioWrite);
 
-	drqCMD(ata);
+	if (ata->ioReadFailed)
+		ata_hdd_read_failed(ata);
+	else
+		drqCMD(ata);
+}
+
+void ata_hdd_read_failed(ata_state_t* ata)
+{
+	ata->ioReadFailed = false;
+	ata->nsectorLeft  = 0;
+	ata->regStatus   |= (uint8_t)ATA_STAT_ERR;
+	ata->regError    |= (uint8_t)ATA_ERR_ECC; /* uncorrectable data */
+	ata_post_cmd_no_data(ata);
 }
 
 bool ata_hdd_can_assess_or_set_error(ata_state_t* ata)

@@ -17,7 +17,7 @@
 
 #include "MemoryTypes.h"
 
-struct EECNT_MODE
+typedef struct EECNT_MODE
 {
 	// 0 - BUSCLK
 	// 1 - 1/16th of BUSCLK
@@ -60,9 +60,9 @@ struct EECNT_MODE
 	// Set to true by the counter when the target has overflowed.
 	// Flag is set only when OverflowInterrupt is enabled.
 	u32 OverflowReached:1;
-};
+} EECNT_MODE;
 
-struct Counter
+typedef struct Counter
 {
 	u32 count;
 	union
@@ -73,25 +73,35 @@ struct Counter
 	u32 target, hold;
 	u32 rate, interrupt;
 	u64 startCycle;		// delta values should be signed.
-};
+} Counter;
 
-struct SyncCounter
+typedef struct SyncCounter
 {
 	u32 Mode;
 	u64 startCycle;					// start cycle of timer
 	s32 deltaCycles;
-};
+} SyncCounter;
 
 extern Counter counters[4];
 
-extern s32 nextDeltaCounter;		// delta until the next counter event (must be signed)
-extern u64 nextStartCounter;
+/* MSVC decorates C++ data symbols; the ELF ABI does not. A variable a C
+ * unit references therefore has to be declared -- and so, through this
+ * header, defined -- with C language linkage, or the Windows link fails
+ * on an undecorated reference while every other target is fine. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+	extern s32 nextDeltaCounter;		// delta until the next counter event (must be signed)
+	extern u64 nextStartCounter;
+#ifdef __cplusplus
+}
+#endif
 
 extern void rcntUpdate(void);
 
 extern void rcntInit(void);
 extern u32 rcntRcount(int index);
-extern bool rcntWrite32( u32 mem, mem32_t& value );
+extern bool rcntWrite32( u32 mem, mem32_t *value );
 extern u16 rcntRead32( u32 mem );		// returns u16 by design! (see implementation for details)
 
 extern void UpdateVSyncRate(bool force);

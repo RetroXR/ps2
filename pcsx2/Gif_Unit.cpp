@@ -176,44 +176,75 @@ void Gif_FinishIRQ(void)
 	}
 }
 
-bool SaveStateBase::gifPathFreeze(u32 path)
+bool gifPathFreeze(SaveStateBase *s, u32 path)
 {
 	Gif_Path& gifPath = gifUnit.gifPath[path];
 
 	if (!gifPath.isMTVU()) // FixMe: savestate freeze bug (Gust games) with MTVU enabled
 	{ 
-		if (IsSaving()) // Move all the buffered data to the start of buffer
+		if (SaveState_IsSaving(s)) // Move all the buffered data to the start of buffer
 			gifPath.RealignPacket(); // May add readAmount which we need to clear on load
 	}
-	u8* bufferPtr = gifPath.buffer; // Backup current buffer ptr
-	Freeze(gifPath.mtvu.fakePackets);
-	FreezeMem(&gifPath, sizeof(gifPath) - sizeof(gifPath.mtvu));
-	FreezeMem(bufferPtr, gifPath.curSize);
-	gifPath.buffer = bufferPtr;
-	if (!IsSaving())
+	/* The struct is frozen whole, so the buffer pointer and the two sizes
+	 * that describe the allocation all come back from the state. The
+	 * pointer was already being kept -- these are the same thing: buffSize
+	 * and buffLimit are what every bound check in Gif_Path is expressed
+	 * against, so taking them from the file means the file sets its own
+	 * limits against a buffer that is whatever Init allocated. */
+	u8* const bufferPtr     = gifPath.buffer;
+	const u32 realBuffSize  = gifPath.buffSize;
+	const u32 realBuffLimit = gifPath.buffLimit;
+
+	SaveState_Freeze(s, gifPath.mtvu.fakePackets);
+	SaveState_FreezeMem(s, &gifPath, sizeof(gifPath) - sizeof(gifPath.mtvu));
+
+	gifPath.buffer    = bufferPtr;
+	gifPath.buffSize  = realBuffSize;
+	gifPath.buffLimit = realBuffLimit;
+
+	/* And curSize is the length of the copy that follows, read out of the
+	 * struct the line above just overwrote. Clamped on the way in only --
+	 * on the way out these are live values and already consistent. */
+	if (SaveState_IsLoading(s))
+	{
+		if (gifPath.curSize > realBuffSize)
+			gifPath.curSize = 0;
+		if (gifPath.curOffset > gifPath.curSize)
+			gifPath.curOffset = 0;
+	}
+
+	SaveState_FreezeMem(s, bufferPtr, gifPath.curSize);
+
+	if (!SaveState_IsSaving(s))
 	{
 		gifPath.readAmount = 0;
 		gifPath.gsPack.readAmount = 0;
 	}
 
-	return IsOkay();
+	return SaveState_IsOkay(s);
 }
 
-bool SaveStateBase::gifFreeze(void)
+bool gifFreeze(SaveStateBase *s)
 {
 	bool mtvuMode = THREAD_VU1;
 	MTGS::WaitGS(false);
-	if (!(FreezeTag("Gif Unit")))
+	if (!(SaveState_FreezeTag(s, "Gif Unit")))
 		return false;
 
-	Freeze(mtvuMode);
-	Freeze(gifUnit.stat);
-	Freeze(gifUnit.gsSIGNAL);
-	Freeze(gifUnit.gsFINISH);
-	Freeze(gifUnit.lastTranType);
-	gifPathFreeze(GIF_PATH_1);
-	gifPathFreeze(GIF_PATH_2);
-	gifPathFreeze(GIF_PATH_3);
+	SaveState_Freeze(s, mtvuMode);
+	SaveState_Freeze(s, gifUnit.stat);
+	SaveState_Freeze(s, gifUnit.gsSIGNAL);
+	SaveState_Freeze(s, gifUnit.gsFINISH);
+	SaveState_Freeze(s, gifUnit.lastTranType);
+	/* Every other Freeze reports the cursor's state; this one returned true
+	 * whatever happened, so a state that failed inside a path was carried
+	 * on from as though it had loaded. */
+	if (!gifPathFreeze(s, GIF_PATH_1))
+		return false;
+	if (!gifPathFreeze(s, GIF_PATH_2))
+		return false;
+	if (!gifPathFreeze(s, GIF_PATH_3))
+		return false;
 
 	return true;
 }

@@ -285,7 +285,13 @@ public:
 
 		bool m_is_frame = false;
 		bool m_used = false;
-		float OffsetHack_modxy = 0.0f;
+		/* The last draw wrote the target at its own width, pixel for pixel,
+		 * so its texture holds the pages where that width puts them; a
+		 * shuffle's emulation lays them out as the picture it moves. */
+		bool m_drawn_at_width = false;
+		/* Read as a texture at its own width: under the Normal half-pixel
+		 * offset, a draw to it moves half a native pixel (see SetupIA). */
+		bool m_half_pixel_shift = false;
 		GSDirtyRectList m_dirty;
 		GSVector4i m_valid{};
 		GSVector4i m_drawn_since_read{};
@@ -373,6 +379,8 @@ public:
 		u8 m_complete_layers = 0;
 		bool m_target = false;
 		bool m_target_direct = false;
+		// Indexed view of a target, converted at the target's scale.
+		bool m_scaled_indexed = false;
 		bool m_repeating = false;
 		bool m_valid_alpha_minmax = false;
 		std::pair<u8, u8> m_alpha_minmax = {0u, 255u};
@@ -518,6 +526,8 @@ protected:
 	FastList<Target*> m_dst[2];
 	FastList<TargetHeightElem> m_target_heights;
 	u64 m_target_memory_usage = 0;
+	/* The usage, in MB, the over-budget warning last named. */
+	u64 m_budget_warned_mb = 0;
 
 	/* What the live targets may hold, from the console: every render
 	 * target and depth buffer a game has at once lives in the PS2's four
@@ -529,8 +539,9 @@ protected:
 	 * Ageing alone does not bound this: a target is kept for sixty
 	 * frames, and a game that makes large ones quickly - Tomb Raider
 	 * Legend's RAD camera at 4x asks for 4096x3584, 58 MB each - has
-	 * gigabytes of them live before the first one is a second old. The
-	 * counters for this were already kept; nothing read them. */
+	 * gigabytes of them live before the first one is a second old. Over
+	 * the budget, the targets that go are those GSTargetBudget.c picks:
+	 * never the ones in use, which hold what the game reads next. */
 	static constexpr u32 TARGET_LIVE_SETS = 2;
 	void EnforceTargetBudget();
 
@@ -544,6 +555,32 @@ private:
 	int m_expected_dst_bp = -1;
 	int m_remembered_dst_bp = -1;
 
+	/* The remaps MoveInTargets has built. A game moves the same regions
+	 * the same way every frame, so a remap is kept for the move and the
+	 * targets it was built for, and uploaded once. */
+	struct MoveRemap
+	{
+		GSVector4i dst_rect;         // destination target pixels it rebuilds
+		GSVector4i src_rect;         // source target pixels it reads
+		GSTexture* texture;          // one 32-bit entry per destination element, RGBA8
+		u32 move[12];                // SBP SBW SPSM sx sy DBP DBW DPSM dx dy w h
+		u32 src_tex0[3];             // the source target's TBP0 TBW PSM
+		u32 dst_tex0[3];             // the destination target's
+		u32 last_use;
+		u8 src_type;
+		u8 nibbles;                  // of a destination element
+		u8 entries;                  // destination elements per word
+		bool has_old;                // some words keep bits the move leaves
+		bool writes_rgb;
+		bool writes_alpha;
+	};
+	static constexpr size_t MAX_MOVE_REMAPS = 256;
+	std::vector<MoveRemap> m_move_remaps;
+	u32 m_move_remap_clock = 0;
+
+	void ClearMoveRemaps();
+	MoveRemap* BuildMoveRemap(const u32 move[12], Target* src, Target* dst);
+
 	/* When the cache passes this it is emptied outright. It was 65535,
 	 * and the constructor reserved that many buckets - half a megabyte of
 	 * pointers, touched at random by every lookup, for entries that are
@@ -555,11 +592,13 @@ private:
 
 	Source* m_temporary_source = nullptr; // invalidated after the draw
 
-	std::unique_ptr<GSDownloadTexture> m_color_download_texture;
-	std::unique_ptr<GSDownloadTexture> m_uint16_download_texture;
-	std::unique_ptr<GSDownloadTexture> m_uint32_download_texture;
+	GSDownloadTexturePtr m_color_download_texture;
+	GSDownloadTexturePtr m_uint16_download_texture;
+	GSDownloadTexturePtr m_uint32_download_texture;
 
-	Source* CreateSource(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, Target* t, bool half_right, int x_offset, int y_offset, const GSVector2i* lod, const GSVector4i* src_range, GSTexture* gpu_clut, SourceRegion region);
+	Source* CreateSource(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, Target* t, bool half_right, int x_offset, int y_offset, const GSVector2i* lod, const GSVector4i* src_range, GSTexture* gpu_clut, SourceRegion region, int page_gather);
+	static int ReadEndX(u32 bw, u32 psm, const GSVector4i& r);
+	static int PagesInTarget(const Target* t, u32 bp, u32 bw, u32 psm, const GSVector4i& r);
 
 	bool PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, const GSVector2i& valid_size, bool is_frame,
 		bool preload, bool preserve_target, const GSVector4i draw_rect, Target* dst, GSTextureCache::Source* src = nullptr);
@@ -572,7 +611,7 @@ private:
 	void ScaleTargetForDisplay(Target* t, const GIFRegTEX0& dispfb, int real_w, int real_h);
 
 	/// Resizes the download texture if needed.
-	bool PrepareDownloadTexture(u32 width, u32 height, GSTexture::Format format, std::unique_ptr<GSDownloadTexture>* tex);
+	bool PrepareDownloadTexture(u32 width, u32 height, GSTexture::Format format, GSDownloadTexturePtr* tex);
 
 	HashCacheEntry* LookupHashCache(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, bool& paltex, const u32* clut, const GSVector2i* lod, SourceRegion region);
 	void RemoveFromHashCache(HashCacheMap::iterator it);
@@ -596,12 +635,15 @@ public:
 	__fi u64 GetSourceMemoryUsage() const { return m_source_memory_usage; }
 	__fi u64 GetTargetMemoryUsage() const { return m_target_memory_usage; }
 
-	void Read(Target* t, const GSVector4i& r);
+	/// Writes the target back to local memory. Returns false when nothing was
+	/// written, so callers do not retire a region that still needs reading.
+	bool Read(Target* t, const GSVector4i& r);
 	void Read(Source* t, const GSVector4i& r);
 	void RemoveAll(bool sources, bool targets, bool hash_cache);
 	void ReadbackAll();
 	static void AddDirtyRectTarget(Target* target, GSVector4i rect, u32 psm, u32 bw, RGBAMask rgba, bool req_linear = false);
 	void ResizeTarget(Target* t, GSVector4i rect, u32 tbp, u32 psm, u32 tbw);
+	bool RelayoutTarget(Target* t, u32 tbw);
 	static bool FullRectDirty(Target* target, u32 rgba_mask);
 	static bool FullRectDirty(Target* target);
 	bool CanTranslate(u32 bp, u32 bw, u32 spsm, GSVector4i r, u32 dbp, u32 dpsm, u32 dbw);
@@ -622,7 +664,8 @@ public:
 	Target* FindTargetOverlap(Target* target, int type, int psm);
 	Target* LookupTarget(GIFRegTEX0 TEX0, const GSVector2i& size, float scale, int type, bool used = true, u32 fbmask = 0,
 		bool is_frame = false, bool preload = GSConfig.PreloadFrameWithGSData, bool preserve_rgb = true, bool preserve_alpha = true,
-		const GSVector4i draw_rc = GSVector4i::zero(), bool is_shuffle = false, bool possible_clear = false, bool preserve_scale = false);
+		const GSVector4i draw_rc = GSVector4i::zero(), bool is_shuffle = false, bool possible_clear = false, bool preserve_scale = false,
+		const Target* keep = nullptr);
 	Target* CreateTarget(GIFRegTEX0 TEX0, const GSVector2i& size, const GSVector2i& valid_size,float scale, int type, bool used = true, u32 fbmask = 0,
 		bool is_frame = false, bool preload = GSConfig.PreloadFrameWithGSData, bool preserve_target = true,
 		const GSVector4i draw_rc = GSVector4i::zero(), GSTextureCache::Source* src = nullptr);
@@ -632,6 +675,8 @@ public:
 
 	/// Looks up a target in the cache, and only returns it if the BP/BW match exactly.
 	Target* GetExactTarget(u32 BP, u32 BW, int type, u32 end_bp);
+	Target* FindPageOwner(u32 BP, u32 BW, u32 PSM, int& x, int& y, int page_in_draw);
+	bool HasTargetAt(u32 BP, u32 BW) const;
 	Target* GetTargetWithSharedBits(u32 BP, u32 PSM) const;
 	Target* FindOverlappingTarget(GSTextureCache::Target* target) const;
 	Target* FindOverlappingTarget(u32 BP, u32 end_bp) const;
@@ -642,7 +687,8 @@ public:
 	bool Has32BitTarget(u32 bp);
 
 	void InvalidateContainedTargets(u32 start_bp, u32 end_bp, u32 write_psm = PSMCT32);
-	void InvalidateVideoMemType(int type, u32 bp, u32 write_psm = PSMCT32, u32 write_fbmsk = 0, bool dirty_only = false);
+	void InvalidateVideoMemType(int type, u32 bp, u32 write_psm = PSMCT32, u32 write_fbmsk = 0, bool dirty_only = false,
+		const Target* keep = nullptr);
 	void InvalidateVideoMemSubTarget(GSTextureCache::Target* rt);
 	void InvalidateVideoMem(const GSOffset& off, const GSVector4i& r, bool target = true);
 	void InvalidateLocalMem(const GSOffset& off, const GSVector4i& r, bool full_flush = false);
@@ -664,7 +710,10 @@ public:
 	bool CopyRGBFromDepthToColor(Target* dst, Target* depth_src);
 
 	bool Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u32 DBW, u32 DPSM, int dx, int dy, int w, int h);
-	void CommitOverlappingTargets(u32 bp);
+	/// A local-memory move worked out on the targets holding its source and
+	/// destination, element by element and one sample at a time, as each
+	/// sample's own memory would see it (see MoveTexelsConstants).
+	bool MoveInTargets(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u32 DBW, u32 DPSM, int dx, int dy, int w, int h);
 	bool ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx, int dy, int w, int h);
 	bool PageMove(u32 SBP, u32 DBP, u32 BW, u32 PSM, int sx, int sy, int dx, int dy, int w, int h);
 	void CopyPages(Target* src, u32 sbw, u32 src_offset, Target* dst, u32 dbw, u32 dst_offset, u32 num_pages,

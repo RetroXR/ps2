@@ -56,9 +56,14 @@ struct texture_image
    bool supports_rgba;
    /* When true, ->pixels holds packed XRGB2101010 (10-bit per channel,
     * bits [29:20]=R [19:10]=G [9:0]=B) rather than 8-bit RGBA/BGRA. Only
-    * honoured by drivers that advertise GFX_CTX_FLAGS_SCREEN_10BPC_SOURCE;
-    * others fall back to an 8-bit copy via image_texture_narrow_10bit(). */
+    * uploaded as such by drivers that answer TEXTURE_GPU_FORMAT_RGB10A2;
+    * others get an 8-bit copy via image_texture_narrow_10bit(). */
    bool pix10;
+   /* When true, ->pixels holds RGBA half floats, eight bytes a pixel in
+    * memory order R,G,B,A - linear light, which no 8-bit encoding
+    * covers - rather than 32-bit texels. Only uploaded by drivers that
+    * answer TEXTURE_GPU_FORMAT_RGBA16F; exclusive with ->pix10. */
+   bool fp16;
    /* Optional GPU-native compressed payload (BCn).  When non-NULL a
     * capable driver may upload it directly and leave ->pixels NULL;
     * image_texture_realize_rgba() decodes to ->pixels on demand for
@@ -103,7 +108,23 @@ enum texture_gpu_format
    TEXTURE_GPU_FORMAT_BC5,       /* RGTC2 (2 channel)  */
    TEXTURE_GPU_FORMAT_BC6H_UF,   /* BPTC unsigned HDR  */
    TEXTURE_GPU_FORMAT_BC6H_SF,   /* BPTC signed HDR    */
-   TEXTURE_GPU_FORMAT_BC7        /* BPTC LDR           */
+   TEXTURE_GPU_FORMAT_BC7,       /* BPTC LDR           */
+   /* Not a compressed payload and never on a texture_compressed:
+    * packed XRGB2101010 in ->pixels, flagged by ->pix10. Asked of
+    * supports_texture_format to learn whether the driver's load and
+    * in-place update sample it as 10-bit rather than reading its words
+    * as 8-bit texels. */
+   TEXTURE_GPU_FORMAT_RGB10A2,
+   /* Likewise uncompressed: RGBA half floats in ->pixels, flagged by
+    * ->fp16, eight bytes a pixel in memory order R,G,B,A. Asked of
+    * supports_texture_format to learn whether the driver's load and
+    * in-place update keep them as floats. */
+   TEXTURE_GPU_FORMAT_RGBA16F,
+   /* Asked of supports_texture_format to learn whether an RGBA16F
+    * texture drawn in the menu or over content is shown as linear
+    * scRGB - 1.0 at 80 nits, the 709 primaries - rather than as an
+    * SDR-encoded one: true only while the output is HDR. */
+   TEXTURE_GPU_FORMAT_SCRGB
 };
 
 /* Numeric mip layout reported by a loader without decoding.  Offsets are
@@ -145,6 +166,10 @@ enum image_type_enum image_texture_get_type(const char *path);
 bool image_texture_load_buffer(struct texture_image *img,
    enum image_type_enum type, void *s, size_t len);
 
+/* ->pix10 is an ask on the way in and an answer on the way out: set
+ * it before the call to have a decoder that can emit XRGB2101010 do
+ * so, and read it after to find out whether it did. Clear on entry
+ * means the ordinary 8-bit image, as before. */
 bool image_texture_load(struct texture_image *img, const char *path);
 
 /* image_texture_load with an abort hook: both decode stages are
@@ -163,9 +188,21 @@ void image_texture_free(struct texture_image *img);
 bool image_texture_realize_rgba(struct texture_image *img);
 
 /* Narrow a texture_image whose ->pixels hold packed XRGB2101010 down to
- * 8-bit ARGB8888 in place (and clear ->pix10), for drivers that cannot sample
- * a 10-bit texture. No-op unless ->pix10 is set. */
+ * 8 bits a channel in place (and clear ->pix10), for drivers that cannot
+ * sample a 10-bit texture: ARGB8888 words, or memory-order R,G,B,A when
+ * ->supports_rgba is set, so ->supports_rgba stays true of the result.
+ * No-op unless ->pix10 is set. */
 void image_texture_narrow_10bit(struct texture_image *img);
+
+/* Rewrite ->pixels, linear 32-bit texels, in place as GX RGBA8 tiles:
+ * the layout the GameCube/Wii GPU samples straight from memory, 4x4
+ * tiles of 64 bytes holding the AR halves of a tile's sixteen texels
+ * and then their GB halves. ->width and ->height are rounded down to
+ * multiples of 4, which the layout requires. Decoders always emit
+ * linear images; only a consumer that hands the pixels to the GX
+ * itself asks for this. False, with @img untouched, when the four-row
+ * scratch cannot be allocated. */
+bool image_texture_tile_gx(struct texture_image *img);
 
 /* Image transfer */
 
@@ -230,6 +267,15 @@ bool image_transfer_is_valid(void *data, enum image_type_enum type);
  * could supply it.  Only PNG, WEBM and MP4 can report this; false for
  * every other type. */
 bool image_transfer_is_10bit(void *data, enum image_type_enum type);
+
+/* Ask a video still (WEBM, MP4) for linear scRGB half floats from an
+ * HDR (PQ or HLG) source - RGBA half floats, 8 bytes a pixel, in the
+ * frame image_transfer_process hands out - and whether the last frame
+ * came out so. A no-op and false for every other type and source. Only
+ * for a caller that can take them: nothing narrows half floats. */
+void image_transfer_set_want_fp16(void *data, enum image_type_enum type,
+      bool want);
+bool image_transfer_is_fp16(void *data, enum image_type_enum type);
 
 /* Ask a decoder to emit packed XRGB2101010 instead of 8-bit RGBA.
  * Honoured by PNG (16-bit-per-channel RGB sources) and by the video
@@ -316,6 +362,32 @@ bool image_transfer_anim_stream_set_argb(void *stream,
  * and WEBP, whose frames are composed on a persistent canvas, where
  * the caller keeps copying. @out must stay valid until the next call
  * that decodes has returned. */
+/* Behind the clock: while @behind is set, pictures nothing references
+ * are consumed without being decoded and their presentation slots
+ * pass, so the stream catches up; what is shown is decoded exactly as
+ * before. Only the MP4 codecs (H.264, HEVC) have such pictures; for
+ * the rest this is a no-op. Clear it once caught up. */
+/* The stream's H.264 decoder (an rh264_video*), for a bench to ask
+ * what its pipeline did; NULL for any other type. */
+void *image_transfer_anim_stream_h264(void *stream, enum image_type_enum type);
+void *image_transfer_anim_stream_h265(void *stream, enum image_type_enum type);
+
+void image_transfer_anim_stream_set_catchup(void *stream,
+      enum image_type_enum type, int behind);
+
+/* HDR video sources: whether the stream's source is PQ or HLG; asking
+ * for linear scRGB half floats for it, which the video streams honour
+ * when they decode into the caller's frame
+ * (image_transfer_anim_stream_set_output) - 8 bytes a pixel then; and
+ * whether the last frame came out so. False and a no-op for every type
+ * without such a source. */
+bool image_transfer_anim_stream_is_hdr(const void *stream,
+      enum image_type_enum type);
+void image_transfer_anim_stream_set_want_fp16(void *stream,
+      enum image_type_enum type, bool want);
+bool image_transfer_anim_stream_is_fp16(const void *stream,
+      enum image_type_enum type);
+
 bool image_transfer_anim_stream_set_output(void *stream,
       enum image_type_enum type, uint32_t *out);
 

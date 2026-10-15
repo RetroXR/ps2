@@ -48,8 +48,9 @@
 #include "IopMem.h"
 #include "Host.h"
 #include "R5900.h"
+#include "Config.h"
 
-alignas(64) vtlb_map_t vtlbdata;
+PCSX2_ALIGN(64) vtlb_map_t vtlbdata;
 
 static bool vtlb_PageFaultHandler(const retro_fault_info_t* info);
 
@@ -1275,7 +1276,7 @@ void vtlb_Reset(void)
 {
 	vtlb_RemoveFastmemMappings();
 	for (int i = 0; i < 48; i++)
-		UnmapTLB(tlb[i], i);
+		UnmapTLB(&tlb[i], i);
 }
 
 void vtlb_Shutdown(void)
@@ -1624,7 +1625,9 @@ static bool vtlb_PageFaultHandler(const retro_fault_info_t* info)
 	{
 		uptr ptr = (uptr)PSM(vaddr);
 		uptr offset = (ptr - (uptr)eeMem->Main);
-		if (ptr && m_PageProtectInfo[offset >> __pageshift].Mode == ProtMode_Write)
+		/* Only main RAM has protection state; a direct-mapped pointer
+		 * elsewhere (ROM, scratchpad) would index past the table. */
+		if (ptr && offset < Ps2MemSize::MainRam && m_PageProtectInfo[offset >> __pageshift].Mode == ProtMode_Write)
 		{
 			mmap_ClearCpuBlock(offset);
 			return true;
@@ -1655,9 +1658,17 @@ void mmap_ResetBlockTracking(void)
 	mode.m_read  = true;
 	mode.m_write = true;
 	mode.m_exec  = false;
-	memset(m_PageProtectInfo, 0, sizeof(m_PageProtectInfo));
 	if (eeMem)
 		mprotect(eeMem->Main, Ps2MemSize::MainRam, host_prot(mode));
+	/* A fastmem view of a page is write-protected only while the page is
+	 * in ProtMode_Write: only mmap_MarkCountedRamPage protects one, and a
+	 * view mapped later takes its protection from the mode. So only those
+	 * pages' views need their protection taken off. */
 	if (CHECK_FASTMEM)
-		vtlb_UpdateFastmemProtection(0, Ps2MemSize::MainRam, mode);
+	{
+		for (u32 page = 0; page < (Ps2MemSize::MainRam >> __pageshift); page++)
+			if (m_PageProtectInfo[page].Mode == ProtMode_Write)
+				vtlb_UpdateFastmemProtection(page << __pageshift, __pagesize, mode);
+	}
+	memset(m_PageProtectInfo, 0, sizeof(m_PageProtectInfo));
 }

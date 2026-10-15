@@ -15,6 +15,15 @@
 
 #pragma once
 
-#include "../GS/MultiISA.h"
+#include "ipu_macroblock.h"
 
-MULTI_ISA_DEF(extern void yuv2rgb(void);)
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* One build; see the note beside ipu_dither in IPU_MultiISA.h. */
+extern void yuv2rgb(const macroblock_8 *mb8, macroblock_rgb32 *rgb32);
+
+#ifdef __cplusplus
+}
+#endif

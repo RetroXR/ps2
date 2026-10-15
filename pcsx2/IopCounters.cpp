@@ -726,22 +726,35 @@ void psxRcntSetGates(void)
 		psxvblankgate &= ~(1 << 3);
 }
 
-bool SaveStateBase::psxRcntFreeze()
+bool psxRcntFreeze(SaveStateBase *s)
 {
-	if (!(FreezeTag("iopCounters")))
+	if (!(SaveState_FreezeTag(s, "iopCounters")))
 		return false;
 
-	Freeze(psxCounters);
-	Freeze(psxNextDeltaCounter);
-	Freeze(psxNextStartCounter);
-	Freeze(psxvblankgate);
-	Freeze(psxhblankgate);
+	SaveState_Freeze(s, psxCounters);
+	SaveState_Freeze(s, psxNextDeltaCounter);
+	SaveState_Freeze(s, psxNextStartCounter);
+	SaveState_Freeze(s, psxvblankgate);
+	SaveState_Freeze(s, psxhblankgate);
 
-	if (!IsOkay())
+	if (!SaveState_IsOkay(s))
 		return false;
 
-	if (IsLoading())
-		psxRcntUpdate();
+	if (SaveState_IsLoading(s))
+	{
+		int i;
+
+		/* rate divides the elapsed cycles in psxRcntUpdate, which is the
+		 * very next thing this function calls. The guards there are
+		 * against PSXHBLANK and against 1 -- the two values that mean
+		 * "do not divide" -- and never against zero, because the runtime
+		 * only ever assigns a rate it computed. 1 is the neutral one. */
+		for (i = 0; i < NUM_COUNTERS; i++)
+		{
+			if (!psxCounters[i].rate)
+				psxCounters[i].rate = 1;
+		}
+	}
 
 	return true;
 }

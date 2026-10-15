@@ -12,9 +12,9 @@
  *
  * Here the rule is in one place and it is simple. Blocks are taken from
  * the driver, are large, and are never given back while the heap lives.
- * An allocation is an offset inside a block, found by walking that
- * block's free list; freeing puts the span back and merges it with its
- * neighbours. A host-visible block is mapped once when it is taken and
+ * An allocation is an offset inside a block, the lowest free span that
+ * fits; the free spans are kept sorted, so freeing is a binary search
+ * and a merge with the span on either side. A host-visible block is mapped once when it is taken and
  * stays mapped, so nothing maps or unmaps per use either.
  *
  * Reserve at startup with gs_vk_heap_reserve and the frames that follow
@@ -73,10 +73,18 @@ typedef struct gs_vk_block
    void          *mapped;      /* whole block, or NULL       */
    VkDeviceSize   size;
    VkDeviceSize   used;
-   gs_vk_span_t  *free_spans;
+   /* No free span is larger than this. Exact after a search that found
+    * nothing, an upper bound otherwise. */
+   VkDeviceSize   max_free;
+   gs_vk_span_t  *free_spans;  /* sorted by offset, never adjacent */
    unsigned       free_count;
    unsigned       free_capacity;
    unsigned       type;
+   /* Buffers, or images. The two never share a block: the driver may
+    * not have a buffer and an image within bufferImageGranularity of
+    * each other in one VkDeviceMemory, and keeping them in blocks of
+    * their own is that rule kept without padding anything. */
+   unsigned       linear;
 } gs_vk_block_t;
 
 /* Enough that the ceiling is what stops the heap growing, never this
@@ -105,6 +113,8 @@ typedef struct gs_vk_heap
     * host-visible, images and targets are device-local. */
    VkDeviceSize                     bytes_host;
    VkDeviceSize                     bytes_device;
+   VkResult                         last_error;     /* why the last block could not be had */
+   VkDeviceSize                     bad_frees;      /* frees of memory already free, refused */
 } gs_vk_heap_t;
 
 /* block_size is what one VkDeviceMemory is; anything larger than it gets
@@ -116,26 +126,42 @@ int  gs_vk_heap_init(gs_vk_heap_t *heap, VkDevice device,
 
 void gs_vk_heap_shutdown(gs_vk_heap_t *heap);
 
-/* Images scale with resolution; persistent stream buffers do not. Budget
- * those separately, rounding streams to whole blocks and leaving one more
- * host-visible block for downloads/alignment. Otherwise the 128 MB streams
- * consume most of the native-resolution image budget before drawing. */
-VkDeviceSize gs_vk_heap_budget(VkDeviceSize block_size,
-      VkDeviceSize image_bytes, VkDeviceSize stream_bytes);
+/* The ceiling for a renderer whose working set - everything the console
+ * holds at once, at the upscale - is working_set, with fixed bytes of
+ * buffers made once at startup. Sixteen working sets, never under four
+ * blocks, bound what textures and targets may take; the fixed buffers
+ * come on top of that, rounded up to blocks, and one more block for the
+ * part of a block each memory type they land in can leave unused. */
+VkDeviceSize gs_vk_heap_ceiling(VkDeviceSize working_set, VkDeviceSize block,
+      VkDeviceSize fixed);
 
 /* Takes blocks from the driver now, so that later allocations of this
  * kind are offsets. type_bits and flags are as a VkMemoryRequirements
- * would give. Returns the number of blocks taken. */
+ * would give, linear as for gs_vk_heap_alloc. Every type with flags is
+ * tried in turn; host-visible blocks are taken only if they map. Returns
+ * the number of blocks taken. */
 unsigned gs_vk_heap_reserve(gs_vk_heap_t *heap, uint32_t type_bits,
-      VkMemoryPropertyFlags flags, unsigned blocks);
+      VkMemoryPropertyFlags flags, int linear, unsigned blocks);
 
 /* Finds room for something with these requirements. required is what the
- * memory must be; preferred is tried first and dropped if no type has
- * it. Returns 0 if there is no room and no block could be taken. */
+ * memory must be; preferred is tried first and dropped when no memory
+ * type has it or the driver has none of it left. Every memory type that
+ * will do is tried, in that order. linear is non-zero for a buffer or an
+ * image with linear tiling, zero for any other image.
+ *
+ * With VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT in required, out->mapped is an
+ * address: memory that could not be mapped is not handed out. Where the
+ * bit is only in preferred, or not asked for, out->mapped may be NULL.
+ *
+ * Returns 0 when there is no room and no block could be taken;
+ * heap->last_error is then what the driver last said. */
 int  gs_vk_heap_alloc(gs_vk_heap_t *heap, const VkMemoryRequirements *req,
       VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred,
-      gs_vk_alloc_t *out);
+      int linear, gs_vk_alloc_t *out);
 
+/* A free of memory that is already free, or of an allocation whose block
+ * has since been given back, changes nothing; the first kind is counted
+ * in bad_frees. */
 void gs_vk_heap_free(gs_vk_heap_t *heap, const gs_vk_alloc_t *alloc);
 
 /* Gives empty blocks back to the driver. Blocks are per memory type and

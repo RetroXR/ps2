@@ -338,6 +338,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	Mipmap = true;
 
 	ManualUserHacks = false;
+	NativeScalingSet = false;
 	UserHacks_AlignSpriteX = false;
 	UserHacks_AutoFlush = GSHWAutoFlushLevel::Disabled;
 	UserHacks_CPUFBConversion = false;
@@ -396,12 +397,12 @@ bool Pcsx2Config::GSOptions::OptionsAreEqual(const GSOptions& right) const
 		OpEqu(UserHacks_HalfPixelOffset) &&
 		OpEqu(UserHacks_RoundSprite) &&
 		OpEqu(UserHacks_NativeScaling) &&
+		OpEqu(NativeScalingSet) &&
 		OpEqu(UserHacks_TCOffsetX) &&
 		OpEqu(UserHacks_TCOffsetY) &&
 		OpEqu(UserHacks_CPUSpriteRenderBW) &&
 		OpEqu(UserHacks_CPUSpriteRenderLevel) &&
 		OpEqu(UserHacks_CPUCLUTRender) &&
-		OpEqu(UserHacks_GPUTargetCLUTMode) &&
 		OpEqu(UserHacks_TextureInsideRt) &&
 		OpEqu(UserHacks_BilinearHack) &&
 		OpEqu(UserHacks_Limit24BitDepth) &&
@@ -446,7 +447,8 @@ void Pcsx2Config::GSOptions::MaskUserHacks()
 	UserHacks_DisableRenderFixes = false;
 	UserHacks_HalfPixelOffset = GSHalfPixelOffset::Off;
 	UserHacks_RoundSprite = 0;
-	UserHacks_NativeScaling = GSNativeScaling::NativeScaling_Normal;
+	if (!NativeScalingSet)
+		UserHacks_NativeScaling = GSNativeScaling::NativeScaling_Normal;
 	UserHacks_AutoFlush = GSHWAutoFlushLevel::Disabled;
 	GPUPaletteConversion = false;
 	PreloadFrameWithGSData = false;
@@ -461,7 +463,6 @@ void Pcsx2Config::GSOptions::MaskUserHacks()
 	UserHacks_CPUSpriteRenderBW = 0;
 	UserHacks_CPUSpriteRenderLevel = 0;
 	UserHacks_CPUCLUTRender = 0;
-	UserHacks_GPUTargetCLUTMode = GSGPUTargetCLUTMode::Disabled;
 	UserHacks_BilinearHack = GSBilinearDirtyMode::Automatic;
 	SkipDrawStart = 0;
 	SkipDrawEnd = 0;
@@ -480,7 +481,8 @@ void Pcsx2Config::GSOptions::MaskUpscalingHacks()
 	UserHacks_Limit24BitDepth = GSLimit24BitDepth::Disabled;
 	UserHacks_HalfPixelOffset = GSHalfPixelOffset::Off;
 	UserHacks_RoundSprite = 0;
-	UserHacks_NativeScaling = GSNativeScaling::NativeScaling_Normal;
+	if (!NativeScalingSet)
+		UserHacks_NativeScaling = GSNativeScaling::NativeScaling_Normal;
 	UserHacks_TCOffsetX = 0;
 	UserHacks_TCOffsetY = 0;
 }

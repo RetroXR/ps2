@@ -124,7 +124,6 @@ PAPX-90203:
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PAPX-90204:
   name: "TVDJ"
   region: "NTSC-J"
@@ -141,19 +140,16 @@ PAPX-90207:
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PAPX-90208:
   name: "Gran Turismo 3 - A-Spec - Replay Theater"
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PAPX-90209:
   name: "Gran Turismo 3 - A-Spec - Netz Toyota - Replay Theater Disc"
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PAPX-90210:
   name: "Yappa RPG desho."
   region: "NTSC-J"
@@ -270,7 +266,6 @@ PAPX-90504:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PAPX-90505:
   name: "2002 Natsu no Osusume Soft Otameshi Disc"
   region: "NTSC-J"
@@ -293,7 +288,6 @@ PAPX-90508:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PAPX-90511:
   name: "Siren [Trial]"
   region: "NTSC-J"
@@ -309,7 +303,6 @@ PAPX-90512:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PAPX-90514:
   name: "Fuyu no Osusume Soft Otameshi Disc"
   region: "NTSC-J"
@@ -349,7 +342,6 @@ PAPX-90523:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PAPX-90524:
   name: "Wild Arms - The Vth Vanguard"
   region: "NTSC-J"
@@ -464,13 +456,11 @@ PBPX-95502:
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PBPX-95503:
   name: "Gran Turismo 3 - A-Spec [PS2 Bundle]"
   region: "NTSC-U"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "PBPX-95503"
     - "SCUS-97102"
@@ -527,7 +517,6 @@ PBPX-95523:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   # vuClampMode = 2  Text in GT mode works.
 PBPX-95524:
   name: "Gran Turismo 4 - Prologue [PlayStation 2 Racing Pack]"
@@ -536,7 +525,6 @@ PBPX-95524:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   # vuClampMode = 2  Text in GT mode works.
 PBPX-95525:
   name: "Final Fantasy XII"
@@ -551,7 +539,6 @@ PBPX-95601:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
     autoFlush: 1 # Helps lens flare and sun occlusion somewhat but doesn't full fix it.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCAJ-20066"
     - "SCAJ-30006"
@@ -584,8 +571,6 @@ PCPX-96306:
 PCPX-96309:
   name: "Gran Turismo 3 Netz Toyota Demo"
   region: "NTSC-J"
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PCPX-96310:
   name: "X-treme Racing SSX"
   region: "NTSC-J"
@@ -598,13 +583,11 @@ PCPX-96311:
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PCPX-96312:
   name: "Gran Turismo 3 - A-Spec - Autobacs Tentou Shiyuu Disc"
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PCPX-96314:
   name: "The Sky Odyssey"
   region: "NTSC-J"
@@ -649,7 +632,6 @@ PCPX-96322:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 PCPX-96323:
   name: "Toro to Kyuujitsu"
   region: "NTSC-J"
@@ -693,8 +675,6 @@ PCPX-96608:
 PCPX-96609:
   name: "Gran Turismo 3 - A-Spec - Tentou Shiyuu Disc Vol. 2"
   region: "NTSC-J"
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PCPX-96610:
   name: "MiruMiru 2001-nen 2-gatsudo Juchuugou"
   region: "NTSC-J"
@@ -742,7 +722,6 @@ PCPX-96624:
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PCPX-96625:
   name: "Play-Pre 2 Volume 4 - 2002 April"
   region: "NTSC-J"
@@ -776,7 +755,6 @@ PCPX-96634:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PCPX-96635:
   name: "Play-Pre 2 Volume 8 - 2003 August"
   region: "NTSC-J"
@@ -804,7 +782,6 @@ PCPX-96649:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PCPX-96653:
   name: "Ratchet & Clank 3"
   region: "NTSC-J"
@@ -835,8 +812,6 @@ PCPX-96660:
   region: "NTSC-J"
   clampModes:
     vuClampMode: 2 # Fixes SPS in TT Mode menu caused by the moving tooltips.
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 PCPX-98017:
   name: "Ratchet & Clank - Giri Giri Ginga no Giga Battle [Demo]"
   region: "NTSC-J"
@@ -1225,7 +1200,6 @@ SCAJ-20066:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCAJ-20066"
     - "SCAJ-30006"
@@ -1441,7 +1415,6 @@ SCAJ-20099:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCAJ-20100:
   name: "Tenchu Kurenai"
   region: "NTSC-C-J"
@@ -1606,23 +1579,11 @@ SCAJ-20125:
   region: "NTSC-Unk"
   clampModes:
     eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
-  gsHWFixes:
-    textureInsideRT: 1 # Fixes heat haze half screen problem.
-    alignSprite: 1
-    halfPixelOffset: 4 # Align post.
-    nativeScaling: 1 # Fixes depth of field effect.
-    getSkipCount: "GSC_Tekken5"
 SCAJ-20126:
   name: "Tekken 5"
   region: "NTSC-Unk"
   clampModes:
     eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
-  gsHWFixes:
-    textureInsideRT: 1 # Fixes heat haze half screen problem.
-    alignSprite: 1
-    halfPixelOffset: 4 # Align post.
-    nativeScaling: 1 # Fixes depth of field effect.
-    getSkipCount: "GSC_Tekken5"
 SCAJ-20127:
   name: "EyeToy - Play 2 [with Camera]"
   region: "NTSC-Unk"
@@ -1910,8 +1871,6 @@ SCAJ-20170:
   compat: 5
   clampModes:
     vuClampMode: 2 # Fixes SPS in TT Mode menu caused by the moving tooltips.
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCAJ-20171:
   name: "Zettai Zetsumei Toshi 2 - Itetsuita Kioku Tachi"
   region: "NTSC-J"
@@ -2088,12 +2047,6 @@ SCAJ-20199:
   region: "NTSC-Unk"
   clampModes:
     eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
-  gsHWFixes:
-    textureInsideRT: 1 # Fixes heat haze half screen problem.
-    alignSprite: 1
-    halfPixelOffset: 4 # Align post.
-    nativeScaling: 1 # Fixes depth of field effect.
-    getSkipCount: "GSC_Tekken5"
 SCAJ-25002:
   name: "Shinobi"
   region: "NTSC-Unk"
@@ -2177,7 +2130,6 @@ SCAJ-30006:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
     autoFlush: 1 # Helps lens flare and sun occlusion somewhat but doesn't full fix it.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCAJ-20066"
     - "SCAJ-30006"
@@ -2200,7 +2152,6 @@ SCAJ-30007:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
     autoFlush: 1 # Helps lens flare and sun occlusion somewhat but doesn't full fix it.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCAJ-30008:
   name: "Gran Turismo 4 [PlayStation 2 the Best]"
   region: "NTSC-C"
@@ -2211,7 +2162,6 @@ SCAJ-30008:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
     autoFlush: 1 # Helps lens flare and sun occlusion somewhat but doesn't full fix it.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCAJ-20066"
     - "SCAJ-30006"
@@ -2267,7 +2217,6 @@ SCCS-40005:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCCS-40006:
   name: "Zhen Sanguo Wushuang 2"
   region: "NTSC-C"
@@ -2337,7 +2286,6 @@ SCCS-60002:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
     autoFlush: 1 # Helps lens flare and sun occlusion somewhat but doesn't full fix it.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCED-50041:
   name: "Tekken Tag Tournament [Demo]"
   region: "PAL-E"
@@ -2607,7 +2555,6 @@ SCED-50844:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCED-50907:
   name: "Final Fantasy X [Bonus Disc - Beyond Final Fantasy]"
   region: "PAL-Unk"
@@ -2742,7 +2689,6 @@ SCED-51352:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCED-51359:
   name: "Official PlayStation 2 Magazine Demo 27"
   region: "PAL-M5"
@@ -3303,7 +3249,6 @@ SCED-52455:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   # vuClampMode = 2  Text in GT mode works.
 SCED-52461:
   name: "SingStar [Press Kit]"
@@ -3325,7 +3270,6 @@ SCED-52578:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCED-52580:
   name: "Magazine Ufficiale PlayStation 2 Italia 06/04"
   region: "PAL-I"
@@ -3341,7 +3285,6 @@ SCED-52681:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCED-52687:
   name: "Formula One 04 [Demo]"
   region: "PAL-M11"
@@ -3760,12 +3703,6 @@ SCED-53538:
   region: "PAL-M5"
   clampModes:
     eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
-  gsHWFixes:
-    textureInsideRT: 1 # Fixes heat haze half screen problem.
-    alignSprite: 1
-    halfPixelOffset: 4 # Align post.
-    nativeScaling: 1 # Fixes depth of field effect.
-    getSkipCount: "GSC_Tekken5"
 SCED-53611:
   name: "Official PlayStation 2 Magazine - German Kids Special"
   region: "PAL-G"
@@ -4167,7 +4104,6 @@ SCES-00000:
   gsHWFixes:
     mipmap: 1
     halfPixelOffset: 1 # Fixes effect misalignment.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCES-50000:
   name: "Ridge Racer V"
   region: "PAL-M5"
@@ -4175,7 +4111,6 @@ SCES-50000:
   clampModes:
     vuClampMode: 2 # Fixes texture rendering in the intro.
   gsHWFixes:
-    cpuFramebufferConversion: 1
     textureInsideRT: 1
     halfPixelOffset: 2 # Fixes title screen and some intro post processing alignment.
     roundSprite: 1 # Fixes ui and hud alignment.
@@ -4224,7 +4159,6 @@ SCES-50034:
   name: "MotoGP"
   region: "PAL-M5"
   gsHWFixes:
-    gpuTargetCLUT: 2 # Fixes some (haze?) shuffle colors.
     textureInsideRT: 1 # Fixes rendering artifacts on racers.
   compat: 5
 SCES-50105:
@@ -4273,7 +4207,6 @@ SCES-50294:
   compat: 5
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCES-50295:
   name: "Dark Cloud"
   region: "PAL-M5"
@@ -4495,7 +4428,6 @@ SCES-50760:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCES-50781:
   name: "Destruction Derby Arenas [Beta, Promo, & Full Retail]"
   region: "PAL-M6"
@@ -4515,8 +4447,6 @@ SCES-50858:
   name: "Gran Turismo - Concept 2002 Tokyo-Geneva"
   region: "PAL-M6"
   compat: 5
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCES-50858"
     - "SCES-50294"
@@ -4928,7 +4858,6 @@ SCES-51719:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
     autoFlush: 1 # Helps lens flare and sun occlusion somewhat but doesn't full fix it.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCES-51719"
     - "SCES-52438"
@@ -5185,7 +5114,6 @@ SCES-52438:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCES-51719"
     - "SCES-52438"
@@ -5400,12 +5328,6 @@ SCES-53202:
   compat: 5
   clampModes:
     eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
-  gsHWFixes:
-    textureInsideRT: 1 # Fixes heat haze half screen problem.
-    alignSprite: 1
-    halfPixelOffset: 4 # Align post.
-    nativeScaling: 1 # Fixes depth of field effect.
-    getSkipCount: "GSC_Tekken5"
 SCES-53247:
   name: "WRC Rally Evolved"
   region: "PAL-M8"
@@ -5531,8 +5453,6 @@ SCES-53372:
   compat: 5
   clampModes:
     vuClampMode: 2 # Fixes SPS in TT Mode menu caused by the moving tooltips.
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCES-53397:
   name: "SingStar Pop - World Events Code"
   region: "PAL-Unk"
@@ -6650,7 +6570,6 @@ SCKA-20022:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   # vuClampMode = 2  Text in GT mode works.
 SCKA-20023:
   name: "Fatal Frame II"
@@ -6696,12 +6615,9 @@ SCKA-20028:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCKA-20029:
   name: "Gran Turismo - Concept 2002 Tokyo-Seoul [PlayStation 2 Big Hit Series]"
   region: "NTSC-K"
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCKA-20030:
   name: "Sly Cooper and the Thievius Raccoonus [PlayStation 2 Big Hit Series]"
   region: "NTSC-K"
@@ -6842,12 +6758,6 @@ SCKA-20049:
   region: "NTSC-K"
   clampModes:
     eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
-  gsHWFixes:
-    textureInsideRT: 1 # Fixes heat haze half screen problem.
-    alignSprite: 1
-    halfPixelOffset: 4 # Align post.
-    nativeScaling: 1 # Fixes depth of field effect.
-    getSkipCount: "GSC_Tekken5"
 SCKA-20050:
   name: "Tales of Legendia"
   region: "NTSC-K"
@@ -7084,12 +6994,6 @@ SCKA-20081:
   region: "NTSC-K"
   clampModes:
     eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
-  gsHWFixes:
-    textureInsideRT: 1 # Fixes heat haze half screen problem.
-    alignSprite: 1
-    halfPixelOffset: 4 # Align post.
-    nativeScaling: 1 # Fixes depth of field effect.
-    getSkipCount: "GSC_Tekken5"
 SCKA-20082:
   name: "Ace Combat 5 - The Unsung War [PlayStation 2 Big Hit Series]"
   region: "NTSC-K"
@@ -7404,7 +7308,6 @@ SCKA-30001:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
     autoFlush: 1 # Helps lens flare and sun occlusion somewhat but doesn't full fix it.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCKA-30002:
   name: "God of War"
   region: "NTSC-K"
@@ -7429,7 +7332,6 @@ SCKA-30004:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
     autoFlush: 1 # Helps lens flare and sun occlusion somewhat but doesn't full fix it.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCKA-30005:
   name: "Rogue Galaxy"
   region: "NTSC-K"
@@ -7503,7 +7405,6 @@ SCPM-85301:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPM-85302:
   name: "Minna no Golf Online"
   region: "NTSC-J"
@@ -7516,7 +7417,6 @@ SCPM-85304:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPN-60101:
   name: "PlayStation BB Navigator - Version 0.10 [Prerelease] [Disc 1]"
   region: "NTSC-J"
@@ -7560,7 +7460,6 @@ SCPS-11003:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCPS-11004:
   name: "Bikkuri Mouse"
   region: "NTSC-J"
@@ -7725,14 +7624,12 @@ SCPS-15009:
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-15010:
   name: "Gran Turismo - Concept 2001 Tokyo"
   region: "NTSC-J"
   compat: 5
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-15011:
   name: "Extermination"
   region: "NTSC-J"
@@ -7971,7 +7868,6 @@ SCPS-15055:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCAJ-20066"
     - "SCAJ-30006"
@@ -8333,8 +8229,6 @@ SCPS-15105:
   region: "NTSC-J"
   clampModes:
     vuClampMode: 2 # Fixes SPS in TT Mode menu caused by the moving tooltips.
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-15106:
   name: "Siren 2"
   region: "NTSC-J"
@@ -8464,7 +8358,6 @@ SCPS-17001:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
     autoFlush: 1 # Helps lens flare and sun occlusion somewhat but doesn't full fix it.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCAJ-20066"
     - "SCAJ-30006"
@@ -8489,28 +8382,24 @@ SCPS-17008:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-17009:
   name: "Nike - Gran Turismo [Limited Edition - 9 inch]"
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-17010:
   name: "Nike - Gran Turismo [Limited Edition - 10 inch]"
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-17011:
   name: "Nike - Gran Turismo [Limited Edition - 11 inch]"
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-17013:
   name: "Rogue Galaxy [Director's Cut]"
   region: "NTSC-J"
@@ -8555,7 +8444,6 @@ SCPS-19103:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCPS-19104:
   name: "Pipo Saru 2001 [PlayStation 2 the Best]"
   region: "NTSC-J"
@@ -8573,7 +8461,6 @@ SCPS-19151:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCPS-19152:
   name: "Saru Get You! 2 [PlayStation 2 the Best]"
   region: "NTSC-J"
@@ -8626,7 +8513,6 @@ SCPS-19208:
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-19209:
   name: "Boku no Summer Vacation 2 [PlayStation 2 the Best]"
   region: "NTSC-J"
@@ -8681,7 +8567,6 @@ SCPS-19252:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
     autoFlush: 1 # Helps lens flare and sun occlusion somewhat but doesn't full fix it.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCAJ-20066"
     - "SCAJ-30006"
@@ -8734,7 +8619,6 @@ SCPS-19304:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCAJ-20066"
     - "SCAJ-30006"
@@ -8930,8 +8814,6 @@ SCPS-19324:
   region: "NTSC-J"
   clampModes:
     vuClampMode: 2 # Fixes SPS in TT Mode menu caused by the moving tooltips.
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-19325:
   name: "Ape Escape - Million Monkeys [PlayStation 2 the Best]"
   region: "NTSC-J"
@@ -9068,7 +8950,6 @@ SCPS-55001:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCPS-55002:
   name: "Zero"
   region: "NTSC-J"
@@ -9091,7 +8972,6 @@ SCPS-55005:
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-55006:
   name: "Wild ARMs - Advanced 3rd"
   region: "NTSC-J"
@@ -9103,7 +8983,6 @@ SCPS-55007:
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-55008:
   name: "Thunderstrike"
   region: "NTSC-J"
@@ -9335,13 +9214,9 @@ SCPS-55901:
 SCPS-55902:
   name: "Gran Turismo - Concept 2002 Tokyo-Geneva"
   region: "NTSC-J"
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-55903:
   name: "Gran Turismo - Concept 2002 Tokyo-Geneva"
   region: "NTSC-J"
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-56001:
   name: "Ico"
   region: "NTSC-K"
@@ -9353,7 +9228,6 @@ SCPS-56001:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCPS-56002:
   name: "Tekken Tag Tournament"
   region: "NTSC-K"
@@ -9374,8 +9248,6 @@ SCPS-56004:
 SCPS-56005:
   name: "Gran Turismo - Concept 2002 Tokyo-Seoul"
   region: "NTSC-K"
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-56006:
   name: "Tekken 4"
   region: "NTSC-K"
@@ -9436,7 +9308,6 @@ SCPS-56016:
     halfPixelOffset: 2 # Fixes post processing position.
     nativeScaling: 2 # Fixes post effects.
     recommendedBlendingLevel: 4 # Fixes car shadows but addeds about 5000 barriers, might impact slower machines.
-    gpuTargetCLUT: 2 # Fixes light flicker.
     getSkipCount: "GSC_DTGames"
     estimateTextureRegion: 1 # Improves performance and reduces hash cache size.
     gpuPaletteConversion: 2 # Improves performance and reduces hash cache size.
@@ -9446,7 +9317,6 @@ SCPS-72001:
   region: "NTSC-J"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCPS-72002:
   name: "Minna no Golf 3"
   region: "NTSC-J"
@@ -9493,7 +9363,6 @@ SCUS-90682:
     vuClampMode: 2 # Text in GT mode works.
   gsHWFixes:
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCUS-94346:
   name: "SingStar Latino"
   region: "NTSC-U"
@@ -9519,7 +9388,6 @@ SCUS-97102:
   compat: 5
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCUS-97104:
   name: "ATV Offroad Fury"
   region: "NTSC-U"
@@ -9567,7 +9435,6 @@ SCUS-97113:
   gsHWFixes:
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
 SCUS-97114:
   name: "NBA ShootOut 2001"
@@ -9580,7 +9447,6 @@ SCUS-97115:
   region: "NTSC-U"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCUS-97116:
   name: "Kiosk Demo Disc 2.01"
   region: "NTSC-U"
@@ -9754,7 +9620,6 @@ SCUS-97159:
     mipmap: 1 # Title screen glow/post-processing store content in the mip chain and select it via LOD; LOD0-only sampling loses it.
     halfPixelOffset: 4 # Fixes misaligned bloom.
     nativeScaling: 2 # Fixes post effects.
-    moveHandler: "MV_Ico" # Fixes depth buffer post-processing.
 SCUS-97160:
   name: "Extermination [Demo]"
   region: "NTSC-U"
@@ -10003,7 +9868,6 @@ SCUS-97219:
   region: "NTSC-U"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCUS-97219"
     - "SCUS-97102"
@@ -10354,7 +10218,6 @@ SCUS-97328:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
     autoFlush: 1 # Helps lens flare and sun occlusion somewhat but doesn't full fix it.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters: # Allows car imports from GT3 or something.
     - "SCUS-97328"
     - "SCUS-97436"
@@ -10559,7 +10422,6 @@ SCUS-97384:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCUS-97392:
   name: "NBA '06 featuring The Life Vol.1 [Demo]"
   region: "NTSC-U"
@@ -10779,7 +10641,6 @@ SCUS-97436:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
   memcardFilters:
     - "SCUS-97328"
     - "SCUS-97436"
@@ -11003,7 +10864,6 @@ SCUS-97483:
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCUS-97484:
   name: "Sly 3 - Honor Among Thieves [E3 Demo]"
   region: "NTSC-U"
@@ -11126,8 +10986,6 @@ SCUS-97502:
   compat: 5
   clampModes:
     vuClampMode: 2 # Fixes SPS in TT Mode menu caused by the moving tooltips.
-  gsHWFixes:
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCUS-97503:
   name: "MLB '06 - The Show [Demo]"
   region: "NTSC-U"
@@ -11182,7 +11040,6 @@ SCUS-97512:
     - "SCUS-97102"
   gsHWFixes:
     recommendedBlendingLevel: 3 # Improves banding in car showcase as well as car brightness and sheen.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCUS-97513:
   name: "Ratchet & Clank 2 - Going Commando [Greatest Hits]"
   region: "NTSC-U"
@@ -11383,7 +11240,6 @@ SCUS-97563:
     vuClampMode: 2 # Text in GT mode works.
   gsHWFixes:
     halfPixelOffset: 4 # Fixes weird edge shadows and depth bleed which happens on the edge as well.
-    getSkipCount: "GSC_PolyphonyDigitalGames" # Fixes post processing.
 SCUS-97564:
   name: "Jampack Demo Disc Vol.15 [T-Rated]"
   region: "NTSC-U"
@@ -11789,7 +11645,6 @@ SLAJ-25053:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -11834,7 +11689,6 @@ SLAJ-25066:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -11873,7 +11727,6 @@ SLAJ-25075:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
   memcardFilters:
     - "SLAJ-25075"
     - "SLPM-66232"
@@ -11971,7 +11824,6 @@ SLAJ-25094:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -12032,8 +11884,6 @@ SLED-50117:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLED-50286:
   name: "Red Faction [Demo]"
   region: "PAL-E"
@@ -12130,7 +11980,6 @@ SLED-51211:
   name: "Burnout 2 - Point of Impact [Demo]"
   region: "PAL-E"
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes bloom and sun rendering in front of everything.
     autoFlush: 1 # Fixes bloom and sun rendering in front of everything.
     halfPixelOffset: 2 # Aligns bloom effect.
     bilinearUpscale: 2 # Reduces color banding of the sun glare.
@@ -12159,7 +12008,6 @@ SLED-51281:
   gsHWFixes:
     halfPixelOffset: 2 # Fixes ghosting.
     alignSprite: 1 # Fixes vertical lines.
-    gpuTargetCLUT: 1 # Fixes broken water rendering.
 SLED-51338:
   name: "Tom Clancy's Ghost Recon"
   region: "PAL-Unk"
@@ -12222,7 +12070,6 @@ SLED-51902:
   gsHWFixes:
     preloadFrameData: 1 # Fixes licences.
     halfPixelOffset: 3 # Fixes double image.
-    gpuTargetCLUT: 1 # Fixes sun penetrating buildings.
     autoFlush: 1 # Fixes sun occlusion.
     bilinearUpscale: 2 # Fixes sun glare textures to behave like native.
 SLED-51921:
@@ -12366,7 +12213,6 @@ SLED-52597:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -12542,7 +12388,6 @@ SLED-53512:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -12589,7 +12434,6 @@ SLED-53637:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -12601,7 +12445,6 @@ SLED-53650:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
 SLED-53664:
   name: "FIFA 06 - Demo Pre-Release Version"
   region: "PAL-E"
@@ -13045,9 +12888,6 @@ SLES-50072:
   name: "Street Fighter EX3"
   region: "PAL-E"
   compat: 5
-  gsHWFixes:
-    getSkipCount: "GSC_SFEX3"
-    halfPixelOffset: 4 # Aligns post effects.
 SLES-50073:
   name: "Driving Emotion Type-S"
   region: "PAL-M5"
@@ -13764,8 +13604,6 @@ SLES-50383:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLES-50384:
   name: "Metal Gear Solid 2 - Sons of Liberty"
   region: "PAL-I"
@@ -13774,8 +13612,6 @@ SLES-50384:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLES-50385:
   name: "Metal Gear Solid 2 - Sons of Liberty"
   region: "PAL-S"
@@ -13784,8 +13620,6 @@ SLES-50385:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLES-50386:
   name: "Crash Bandicoot - The Wrath of Cortex"
   region: "PAL-M6"
@@ -14688,21 +14522,18 @@ SLES-50812:
   region: "PAL-E"
   gsHWFixes:
     autoFlush: 1 # Fixes lens flares.
-    gpuTargetCLUT: 1 # Fixes lens flares going through objects.
     bilinearUpscale: 2 # Smooths out sun glare textures.
 SLES-50813:
   name: "Spider-Man"
   region: "PAL-F"
   gsHWFixes:
     autoFlush: 1 # Fixes lens flares.
-    gpuTargetCLUT: 1 # Fixes lens flares going through objects.
     bilinearUpscale: 2 # Smooths out sun glare textures.
 SLES-50814:
   name: "Spider-Man"
   region: "PAL-G"
   gsHWFixes:
     autoFlush: 1 # Fixes lens flares.
-    gpuTargetCLUT: 1 # Fixes lens flares going through objects.
     bilinearUpscale: 2 # Smooths out sun glare textures.
   compat: 5
 SLES-50815:
@@ -14964,7 +14795,6 @@ SLES-50876:
     autoFlush: 1 # Aligns and corrects shadows.
     halfPixelOffset: 2 # Fixes sun and depth line.
     cpuCLUTRender: 1 # Fixes janky coloured cars.
-    gpuTargetCLUT: 1 # Fixes janky coloured cars.
     textureInsideRT: 1 # Fixes car textures.
     cpuSpriteRenderBW: 4 # Alleviates text and sky rendering issues.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -15140,7 +14970,6 @@ SLES-50965:
   region: "PAL-S"
   gsHWFixes:
     autoFlush: 1 # Fixes lens flares.
-    gpuTargetCLUT: 1 # Fixes lens flares going through objects.
     bilinearUpscale: 2 # Smooths out sun glare textures.
 SLES-50972:
   name: "Barbarian"
@@ -15278,7 +15107,6 @@ SLES-51044:
   region: "PAL-M5"
   compat: 5
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes bloom and sun rendering in front of everything.
     autoFlush: 1 # Fixes bloom and sun rendering in front of everything.
     halfPixelOffset: 2 # Aligns bloom effect.
     bilinearUpscale: 2 # Reduces color banding of the sun glare.
@@ -15713,7 +15541,6 @@ SLES-51209:
   gsHWFixes:
     halfPixelOffset: 2 # Fixes ghosting.
     alignSprite: 1 # Fixes vertical lines.
-    gpuTargetCLUT: 1 # Fixes broken water rendering.
 SLES-51214:
   name: "Harry Potter og Hemmelighedernes Kammer"
   region: "PAL-D"
@@ -15814,7 +15641,6 @@ SLES-51230:
   name: "Minority Report - Everybody Runs"
   region: "PAL-E"
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes light bleed through objects.
     halfPixelOffset: 1 # Fixes light bleed through objects.
     autoFlush: 1 # Fixes light bloom intensity.
 SLES-51232:
@@ -16074,14 +15900,12 @@ SLES-51317:
   name: "Minority Report - Le Futur vous Rattrape"
   region: "PAL-F"
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes light bleed through objects.
     halfPixelOffset: 1 # Fixes light bleed through objects.
     autoFlush: 1 # Fixes light bloom intensity.
 SLES-51318:
   name: "Minority Report - Everybody Runs"
   region: "PAL-G"
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes light bleed through objects.
     halfPixelOffset: 1 # Fixes light bleed through objects.
     autoFlush: 1 # Fixes light bloom intensity.
 SLES-51322:
@@ -16545,8 +16369,6 @@ SLES-51553:
     vuClampMode: 2 # Fixes SPS in item menu.
   gsHWFixes:
     textureInsideRT: 1 # Fixes rainbow shadow of legions.
-    alignSprite: 1 # Fixes green vertical lines.
-    roundSprite: 2 # Fixes vertical lines and some font artifacts but not completely fixed.
 SLES-51554:
   name: "Cell Damage Overdrive"
   region: "PAL-M5"
@@ -16949,7 +16771,6 @@ SLES-51753:
   gsHWFixes:
     preloadFrameData: 1 # Fixes licences.
     halfPixelOffset: 3 # Fixes double image.
-    gpuTargetCLUT: 1 # Fixes sun penetrating buildings.
     autoFlush: 1 # Fixes sun occlusion.
     bilinearUpscale: 2 # Fixes sun glare textures to behave like native.
 SLES-51754:
@@ -16959,7 +16780,6 @@ SLES-51754:
   gsHWFixes:
     preloadFrameData: 1 # Fixes licences.
     halfPixelOffset: 3 # Fixes double image.
-    gpuTargetCLUT: 1 # Fixes sun penetrating buildings.
     autoFlush: 1 # Fixes sun occlusion.
     bilinearUpscale: 2 # Fixes sun glare textures to behave like native.
 SLES-51755:
@@ -18014,7 +17834,6 @@ SLES-52153:
     autoFlush: 1 # Aligns and corrects shadows.
     halfPixelOffset: 2 # Fixes sun and depth line.
     cpuCLUTRender: 1 # Fixes janky coloured cars.
-    gpuTargetCLUT: 1 # Fixes janky coloured cars.
     textureInsideRT: 1 # Fixes car textures.
     cpuSpriteRenderBW: 4 # Alleviates text and sky rendering issues.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -18050,7 +17869,6 @@ SLES-52179:
   gsHWFixes:
     halfPixelOffset: 5 # Fixes depth line and edge garbage.
     nativeScaling: 2 # Fixes post effects.
-    gpuTargetCLUT: 2 # Fixes broken effects.
   compat: 5
 SLES-52187:
   name: "Baldur's Gate - Dark Alliance II"
@@ -18881,10 +18699,6 @@ SLES-52533:
 SLES-52534:
   name: "Crimson Tears"
   region: "PAL-M3"
-  gsHWFixes:
-    halfPixelOffset: 1 # Aligns post effects.
-    nativeScaling: 2 # Fixes post effects.
-#    deinterlace: 6 # Game requires blend tff de-interlacing when auto for 'fixing' shimmer on character models and more flickering or half weaved, though the game suffers from the field order.
 SLES-52535:
   name: "Rumble Roses"
   region: "PAL-M5"
@@ -19101,7 +18915,6 @@ SLES-52584:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -19115,7 +18928,6 @@ SLES-52585:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -19977,7 +19789,6 @@ SLES-52877:
     roundSprite: 1 # Further reduces blurriness.
     bilinearUpscale: 1 # Smooths out fire textures.
     nativeScaling: 2 # Fixes post processing.
-    beforeDraw: "OI_HauntingGround" # Fix bloom.
 SLES-52882:
   name: "Stolen"
   region: "PAL-M5"
@@ -20272,7 +20083,6 @@ SLES-52968:
   region: "PAL-E"
   compat: 5
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes bloom and sun rendering in front of everything.
     autoFlush: 1 # Fixes bloom and sun rendering in front of everything.
     halfPixelOffset: 2 # Aligns bloom effect.
     bilinearUpscale: 2 # Reduces color banding of the sun glare.
@@ -21836,7 +21646,6 @@ SLES-53506:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -21857,7 +21666,6 @@ SLES-53507:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -22145,7 +21953,6 @@ SLES-53557:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
   memcardFilters: # Reads Underground 2 save for extra money.
     - "SLES-53557"
     - "SLES-53558"
@@ -22159,7 +21966,6 @@ SLES-53558:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
   memcardFilters:
     - "SLES-53557"
     - "SLES-53558"
@@ -22173,7 +21979,6 @@ SLES-53559:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
   memcardFilters:
     - "SLES-53557"
     - "SLES-53558"
@@ -22310,7 +22115,6 @@ SLES-53616:
     cpuSpriteRenderBW: 1 # Fixes textures.
     preloadFrameData: 1 # Fixes numberplates and ensures above targets are valid.
     roundSprite: 1 # Fixes lines in some post-effects.
-    gpuTargetCLUT: 1 # Fixes light occlusion.
     halfPixelOffset: 4 # Reduces post misalignment.
     nativeScaling: 2 # Fixes remaining post misalignment and light bloom and shadows.
 SLES-53617:
@@ -22324,7 +22128,6 @@ SLES-53617:
     cpuSpriteRenderBW: 1 # Fixes textures.
     preloadFrameData: 1 # Fixes numberplates and ensures above targets are valid.
     roundSprite: 1 # Fixes lines in some post-effects.
-    gpuTargetCLUT: 1 # Fixes light occlusion.
     halfPixelOffset: 4 # Reduces post misalignment.
     nativeScaling: 2 # Fixes remaining post misalignment and light bloom and shadows.
 SLES-53618:
@@ -22338,7 +22141,6 @@ SLES-53618:
     cpuSpriteRenderBW: 1 # Fixes textures.
     preloadFrameData: 1 # Fixes numberplates and ensures above targets are valid.
     roundSprite: 1 # Fixes lines in some post-effects.
-    gpuTargetCLUT: 1 # Fixes light occlusion.
     halfPixelOffset: 4 # Reduces post misalignment.
     nativeScaling: 2 # Fixes remaining post misalignment and light bloom and shadows.
 SLES-53621:
@@ -23082,7 +22884,6 @@ SLES-53857:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
   memcardFilters:
     - "SLES-53557"
     - "SLES-53558"
@@ -23201,7 +23002,6 @@ SLES-53904:
   gsHWFixes:
     halfPixelOffset: 2 # Fixes post processing position.
     nativeScaling: 2 # Fixes post effects.
-    gpuTargetCLUT: 2 # Fixes light flicker.
     getSkipCount: "GSC_DTGames"
     estimateTextureRegion: 1 # Improves performance and reduces hash cache size.
     gpuPaletteConversion: 2 # Improves performance and reduces hash cache size.
@@ -24500,7 +24300,6 @@ SLES-54346:
   gsHWFixes:
     halfPixelOffset: 5 # Fixes misaligment issues.
     nativeScaling: 2 # Fixes post effects such as the afterburners.
-    gpuTargetCLUT: 1 # Fixes lens flares going through objects.
     bilinearUpscale: 2 # Smooths out sun glare textures.
 SLES-54347:
   name: "The Sims 2 - Pets"
@@ -25347,7 +25146,6 @@ SLES-54596:
   gsHWFixes:
     halfPixelOffset: 5 # Fixes misaligment issues.
     nativeScaling: 2 # Fixes post effects such as the afterburners.
-    gpuTargetCLUT: 1 # Fixes lens flares going through objects.
     bilinearUpscale: 2 # Smooths out sun glare textures.
 SLES-54604:
   name: "¡Qué pasa Neng! El videojuego"
@@ -25428,7 +25226,6 @@ SLES-54627:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -25636,7 +25433,6 @@ SLES-54681:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -26618,7 +26414,6 @@ SLES-54992:
   region: "PAL-M6"
   gsHWFixes:
     autoFlush: 1 # Fixes lights not appearing.
-    gpuTargetCLUT: 1 # Fixes lights going through darts players.
     bilinearUpscale: 2 # Smooths out lights.
 SLES-54994:
   name: "Pippa Funnell - Ranch Rescue"
@@ -27753,7 +27548,6 @@ SLES-55349:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes blurriness.
     bilinearUpscale: 2 # Fixes sun glare textures.
-    gpuTargetCLUT: 1 # Fixes sun penetration.
     nativeScaling: 2 # Fixes post alignment.
     getSkipCount: "GSC_NFSUndercover"
     textureInsideRT: 1 # Fixes sun glare.
@@ -27776,7 +27570,6 @@ SLES-55350:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes blurriness.
     bilinearUpscale: 2 # Fixes sun glare textures.
-    gpuTargetCLUT: 1 # Fixes sun penetration.
     nativeScaling: 2 # Fixes post alignment.
     getSkipCount: "GSC_NFSUndercover"
     textureInsideRT: 1 # Fixes sun glare.
@@ -27799,7 +27592,6 @@ SLES-55351:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes blurriness.
     bilinearUpscale: 2 # Fixes sun glare textures.
-    gpuTargetCLUT: 1 # Fixes sun penetration.
     nativeScaling: 2 # Fixes post alignment.
     getSkipCount: "GSC_NFSUndercover"
     textureInsideRT: 1 # Fixes sun glare.
@@ -27823,7 +27615,6 @@ SLES-55352:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes blurriness.
     bilinearUpscale: 2 # Fixes sun glare textures.
-    gpuTargetCLUT: 1 # Fixes sun penetration.
     nativeScaling: 2 # Fixes post alignment.
     getSkipCount: "GSC_NFSUndercover"
     textureInsideRT: 1 # Fixes sun glare.
@@ -27846,7 +27637,6 @@ SLES-55353:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes blurriness.
     bilinearUpscale: 2 # Fixes sun glare textures.
-    gpuTargetCLUT: 1 # Fixes sun penetration.
     nativeScaling: 2 # Fixes post alignment.
     getSkipCount: "GSC_NFSUndercover"
     textureInsideRT: 1 # Fixes sun glare.
@@ -28626,8 +28416,6 @@ SLES-82009:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLES-82010:
   name: "Metal Gear Solid 2, Document of"
   region: "PAL-E"
@@ -29188,8 +28976,6 @@ SLKA-25026:
     vuClampMode: 2 # Fixes SPS in item menu.
   gsHWFixes:
     textureInsideRT: 1 # Fixes rainbow shadow of legions.
-    alignSprite: 1 # Fixes green vertical lines.
-    roundSprite: 2 # Fixes vertical lines and some font artifacts but not completely fixed.
 SLKA-25027:
   name: "NBA Street Vol. 2"
   region: "NTSC-K"
@@ -29238,7 +29024,6 @@ SLKA-25039:
   name: "Burnout 2 - Point of Impact"
   region: "NTSC-K"
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes bloom and sun rendering in front of everything.
     autoFlush: 1 # Fixes bloom and sun rendering in front of everything.
     halfPixelOffset: 2 # Aligns bloom effect.
     bilinearUpscale: 2 # Reduces color banding of the sun glare.
@@ -29836,7 +29621,6 @@ SLKA-25196:
     autoFlush: 1 # Aligns and corrects shadows.
     halfPixelOffset: 2 # Fixes sun and depth line.
     cpuCLUTRender: 1 # Fixes janky coloured cars.
-    gpuTargetCLUT: 1 # Fixes janky coloured cars.
     textureInsideRT: 1 # Fixes car textures.
     cpuSpriteRenderBW: 4 # Alleviates text and sky rendering issues.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -29895,7 +29679,6 @@ SLKA-25206:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -30159,7 +29942,6 @@ SLKA-25260:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -30347,7 +30129,6 @@ SLKA-25304:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -30509,7 +30290,6 @@ SLKA-25334:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     nativeScaling: 2 # Fixes post effects.
 SLKA-25335:
   name: "Shadow the Hedgehog"
@@ -31152,8 +30932,6 @@ SLKA-35001:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLKA-35003:
   name: "Sakura Taisen - Atsuki Chishioni"
   region: "NTSC-K"
@@ -31205,7 +30983,6 @@ SLPM-55003:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     nativeScaling: 2 # Fixes post effects.
 SLPM-55004:
   name: "Burnout Revenge (EASY 1980)"
@@ -31216,7 +30993,6 @@ SLPM-55004:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -31335,7 +31111,6 @@ SLPM-55036:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -31653,7 +31428,6 @@ SLPM-55127:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes blurriness.
     bilinearUpscale: 2 # Fixes sun glare textures.
-    gpuTargetCLUT: 1 # Fixes sun penetration.
     nativeScaling: 2 # Fixes post alignment.
     getSkipCount: "GSC_NFSUndercover"
     textureInsideRT: 1 # Fixes sun glare.
@@ -32038,7 +31812,6 @@ SLPM-55244:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes blurriness.
     bilinearUpscale: 2 # Fixes sun glare textures.
-    gpuTargetCLUT: 1 # Fixes sun penetration.
     nativeScaling: 2 # Fixes post alignment.
     getSkipCount: "GSC_NFSUndercover"
     textureInsideRT: 1 # Fixes sun glare.
@@ -32186,9 +31959,6 @@ SLPM-60104:
 SLPM-60105:
   name: "Street Fighter EX3 [Trial]"
   region: "NTSC-J"
-  gsHWFixes:
-    getSkipCount: "GSC_SFEX3"
-    halfPixelOffset: 4 # Aligns post effects.
 SLPM-60106:
   name: "Koei PlayStation 2 Line-Up"
   region: "NTSC-J"
@@ -32201,7 +31971,6 @@ SLPM-60109:
   clampModes:
     vuClampMode: 2 # Fixes texture rendering in the intro.
   gsHWFixes:
-    cpuFramebufferConversion: 1
     textureInsideRT: 1
     halfPixelOffset: 2 # Fixes title screen and some intro post processing alignment.
     roundSprite: 1 # Fixes ui and hud alignment.
@@ -32616,7 +32385,6 @@ SLPM-60246:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -33059,7 +32827,6 @@ SLPM-61092:
     autoFlush: 1 # Aligns and corrects shadows.
     halfPixelOffset: 2 # Fixes sun and depth line.
     cpuCLUTRender: 1 # Fixes janky coloured cars.
-    gpuTargetCLUT: 1 # Fixes janky coloured cars.
     textureInsideRT: 1 # Fixes car textures.
     cpuSpriteRenderBW: 4 # Alleviates text and sky rendering issues.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -33525,8 +33292,6 @@ SLPM-62043:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-62044:
   name: "RC Revenge Pro"
   region: "NTSC-J"
@@ -36357,8 +36122,6 @@ SLPM-65077:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
   memcardFilters:
     - "SLPM-65078"
     - "SLPM-65077"
@@ -36370,8 +36133,6 @@ SLPM-65078:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
   memcardFilters:
     - "SLPM-65078"
     - "SLPM-65077"
@@ -36823,7 +36584,6 @@ SLPM-65205:
   region: "NTSC-J"
   gsHWFixes:
     autoFlush: 1 # Fixes lens flares.
-    gpuTargetCLUT: 1 # Fixes lens flares going through objects.
     bilinearUpscale: 2 # Smooths out sun glare textures.
 SLPM-65206:
   name: "King of Colosseum - Green"
@@ -37072,8 +36832,6 @@ SLPM-65249:
     vuClampMode: 2 # Fixes SPS in item menu.
   gsHWFixes:
     textureInsideRT: 1 # Fixes rainbow shadow of legions.
-    alignSprite: 1 # Fixes green vertical lines.
-    roundSprite: 2 # Fixes vertical lines and some font artifacts but not completely fixed.
 SLPM-65250:
   name: "Kattobi! Golf"
   region: "NTSC-J"
@@ -38296,10 +38054,6 @@ SLPM-65575:
   name: "Crimson Tears"
   region: "NTSC-J"
   compat: 5
-  gsHWFixes:
-    halfPixelOffset: 1 # Aligns post effects.
-    nativeScaling: 2 # Fixes post effects.
-#    deinterlace: 6 # Game requires blend tff de-interlacing when auto for 'fixing' shimmer on character models and more flickering or half weaved, though the game suffers from the field order.
 SLPM-65576:
   name: "Tantei Jinguuji Saburou - Kind of Blue"
   region: "NTSC-J"
@@ -38846,7 +38600,6 @@ SLPM-65719:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -38894,7 +38647,6 @@ SLPM-65729:
   gsHWFixes:
     preloadFrameData: 1 # Fixes licences.
     halfPixelOffset: 3 # Fixes double image.
-    gpuTargetCLUT: 1 # Fixes sun penetrating buildings.
     autoFlush: 1 # Fixes sun occlusion.
     bilinearUpscale: 2 # Fixes sun glare textures to behave like native.
 SLPM-65730:
@@ -38949,7 +38701,6 @@ SLPM-65741:
     autoFlush: 1 # Aligns and corrects shadows.
     halfPixelOffset: 2 # Fixes sun and depth line.
     cpuCLUTRender: 1 # Fixes janky coloured cars.
-    gpuTargetCLUT: 1 # Fixes janky coloured cars.
     textureInsideRT: 1 # Fixes car textures.
     cpuSpriteRenderBW: 4 # Alleviates text and sky rendering issues.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -39017,8 +38768,6 @@ SLPM-65754:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-65755:
   name: "Samurai Western - Katsugeki Samurai-dou"
   region: "NTSC-J"
@@ -39643,7 +39392,6 @@ SLPM-65913:
     roundSprite: 1 # Further reduces blurriness.
     bilinearUpscale: 1 # Smooths out fire textures.
     nativeScaling: 2 # Fixes post processing.
-    beforeDraw: "OI_HauntingGround" # Fix bloom.
 SLPM-65914:
   name: "Nana"
   region: "NTSC-J"
@@ -39811,7 +39559,6 @@ SLPM-65958:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -40388,7 +40135,6 @@ SLPM-66098:
   gsHWFixes:
     preloadFrameData: 1 # Fixes licences.
     halfPixelOffset: 3 # Fixes double image.
-    gpuTargetCLUT: 1 # Fixes sun penetrating buildings.
     autoFlush: 1 # Fixes sun occlusion.
     bilinearUpscale: 2 # Fixes sun glare textures to behave like native.
 SLPM-66099:
@@ -40445,7 +40191,6 @@ SLPM-66108:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -41067,7 +40812,6 @@ SLPM-66232:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
   memcardFilters:
     - "SLAJ-25075"
     - "SLPM-66232"
@@ -41382,7 +41126,6 @@ SLPM-66302:
   name: "Clannad"
   region: "NTSC-J"
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes colours.
     minimumBlendingLevel: 4 # Fixes transparancy.
 SLPM-66303:
   name: "Shin Sangoku Musou 2"
@@ -42119,7 +41862,6 @@ SLPM-66473:
     cpuSpriteRenderBW: 1 # Fixes textures.
     preloadFrameData: 1 # Fixes numberplates and ensures above targets are valid.
     roundSprite: 1 # Fixes lines in some post-effects.
-    gpuTargetCLUT: 1 # Fixes light occlusion.
     halfPixelOffset: 4 # Reduces post misalignment.
     nativeScaling: 2 # Fixes remaining post misalignment and light bloom and shadows.
 SLPM-66474:
@@ -42273,8 +42015,6 @@ SLPM-66503:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-66504:
   name: "Onimusha 2 [Mega Hits]"
   region: "NTSC-J"
@@ -42487,7 +42227,6 @@ SLPM-66562:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
   memcardFilters:
     - "SLAJ-25075"
     - "SLPM-66232"
@@ -42832,7 +42571,6 @@ SLPM-66638:
     roundSprite: 1 # Further reduces blurriness.
     bilinearUpscale: 1 # Smooths out fire textures.
     nativeScaling: 2 # Fixes post processing.
-    beforeDraw: "OI_HauntingGround" # Fix bloom.
 SLPM-66639:
   name: "Street Fighter III - 3rd Strike [Capcom the Best]"
   region: "NTSC-J"
@@ -42893,7 +42631,6 @@ SLPM-66652:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -43296,7 +43033,6 @@ SLPM-66739:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -43521,8 +43257,6 @@ SLPM-66792:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-66793:
   name: "Metal Gear Solid 2 - Sons of Liberty [20th Anniversary Edition] [Disc 2 of 2]"
   region: "NTSC-J"
@@ -43531,8 +43265,6 @@ SLPM-66793:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-66794:
   name: "Metal Gear Solid 3 - Snake Eater [20th Anniversary Edition]"
   region: "NTSC-J"
@@ -44147,7 +43879,6 @@ SLPM-66962:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -44278,8 +44009,6 @@ SLPM-67002:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-67003:
   name: "Sakura Taisen - Atsuki Chishio ni"
   region: "NTSC-J"
@@ -44311,8 +44040,6 @@ SLPM-67008:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-67009:
   name: "Sakura Taisen V - Saraba Itoshiki Hito Yo"
   region: "NTSC-J"
@@ -44437,8 +44164,6 @@ SLPM-67515:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-67516:
   name: "Soul Reaver 2"
   region: "NTSC-K"
@@ -44640,8 +44365,6 @@ SLPM-68503:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-68504:
   name: "Tokimeki Memorial 3 - Special Sound Track"
   region: "NTSC-J"
@@ -44970,7 +44693,6 @@ SLPM-74243:
     cpuSpriteRenderBW: 1 # Fixes textures.
     preloadFrameData: 1 # Fixes numberplates and ensures above targets are valid.
     roundSprite: 1 # Fixes lines in some post-effects.
-    gpuTargetCLUT: 1 # Fixes light occlusion.
     halfPixelOffset: 4 # Reduces post misalignment.
     nativeScaling: 2 # Fixes remaining post misalignment and light bloom and shadows.
 SLPM-74244:
@@ -45054,8 +44776,6 @@ SLPM-74255:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-74256:
   name: "Metal Gear Solid 2 - Sons of Liberty [PlayStation 2 the Best] [Disc 2 of 2]"
   region: "NTSC-J"
@@ -45064,8 +44784,6 @@ SLPM-74256:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-74257:
   name: "Metal Gear Solid 3 - Subsistence (Disc 1) (Subsistence)"
   region: "NTSC-J"
@@ -45283,8 +45001,6 @@ SLPM-74901:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLPM-83770:
   name: "Persona 3 FES [Append Edition]"
   region: "NTSC-J"
@@ -45304,10 +45020,7 @@ SLPS-20001:
   clampModes:
     vuClampMode: 2 # Fixes texture rendering in the intro.
   gsHWFixes:
-    cpuFramebufferConversion: 1
     textureInsideRT: 1
-    halfPixelOffset: 2 # Fixes title screen and some intro post processing alignment.
-    roundSprite: 1 # Fixes ui and hud alignment.
     gpuPaletteConversion: 2 # Lots of CLUTs in large textures.
     cpuSpriteRenderBW: 1 # Fixes car textures.
     cpuSpriteRenderLevel: 1 # Needed for above.
@@ -45318,9 +45031,6 @@ SLPS-20002:
 SLPS-20003:
   name: "Street Fighter EX3"
   region: "NTSC-J"
-  gsHWFixes:
-    getSkipCount: "GSC_SFEX3"
-    halfPixelOffset: 4 # Aligns post effects.
 SLPS-20004:
   name: "Kakinoki Shougi IV"
   region: "NTSC-J"
@@ -45458,7 +45168,6 @@ SLPS-20040:
   name: "MotoGP"
   region: "NTSC-J"
   gsHWFixes:
-    gpuTargetCLUT: 2 # Fixes some (haze?) shuffle colors.
     textureInsideRT: 1 # Fixes rendering artifacts on racers.
 SLPS-20041:
   name: "Mahjong Goku Taisei"
@@ -48348,7 +48057,6 @@ SLPS-25351:
   name: "Burnout 2 - Point of Impact"
   region: "NTSC-J"
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes bloom and sun rendering in front of everything.
     autoFlush: 1 # Fixes bloom and sun rendering in front of everything.
     halfPixelOffset: 4 # Aligns bloom effect.
     bilinearUpscale: 2 # Reduces color banding of the sun glare.
@@ -49035,12 +48743,6 @@ SLPS-25510:
   compat: 5
   clampModes:
     eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
-  gsHWFixes:
-    textureInsideRT: 1 # Fixes heat haze half screen problem.
-    alignSprite: 1 # Fixes vertical lines.
-    halfPixelOffset: 4 # Align post.
-    nativeScaling: 1 # Fixes depth of field effect.
-    getSkipCount: "GSC_Tekken5"
 SLPS-25511:
   name: "Rasetsu Alternative"
   region: "NTSC-J"
@@ -50235,7 +49937,6 @@ SLPS-25796:
   name: "Ore no Shite Agake"
   region: "NTSC-J"
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes incorrect rendering and some missing text.
     cpuCLUTRender: 1 # Fixes the rest of the incorrect rendering and missing text.
 SLPS-25797:
   name: "Ikki Tousen - Shining Dragon [Limited Edition]"
@@ -51064,7 +50765,6 @@ SLPS-71502:
   name: "Ridge Racer V"
   region: "NTSC-J"
   gsHWFixes:
-    cpuFramebufferConversion: 1
     textureInsideRT: 1
     halfPixelOffset: 2 # Fixes title screen and some intro post processing alignment.
     roundSprite: 1 # Fixes ui and hud alignment.
@@ -51294,12 +50994,6 @@ SLPS-73223:
   region: "NTSC-J"
   clampModes:
     eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
-  gsHWFixes:
-    textureInsideRT: 1 # Fixes heat haze half screen problem.
-    alignSprite: 1 # Fixes vertical lines.
-    halfPixelOffset: 4 # Align post.
-    nativeScaling: 1 # Fixes depth of field effect.
-    getSkipCount: "GSC_Tekken5"
 SLPS-73224:
   name: "Xenosaga Episode II - Jenseits von Gut und Bose [PlayStation 2 the Best] [Disc 1 of 2]"
   region: "NTSC-J"
@@ -51779,7 +51473,6 @@ SLUS-20002:
   clampModes:
     vuClampMode: 2 # Fixes texture rendering in the intro.
   gsHWFixes:
-    cpuFramebufferConversion: 1
     textureInsideRT: 1
     halfPixelOffset: 2 # Fixes title screen and some intro post processing alignment.
     roundSprite: 1 # Fixes ui and hud alignment.
@@ -51973,7 +51666,6 @@ SLUS-20058:
   name: "MotoGP"
   region: "NTSC-U"
   gsHWFixes:
-    gpuTargetCLUT: 2 # Fixes some (haze?) shuffle colors.
     textureInsideRT: 1 # Fixes rendering artifacts on racers.
   compat: 5
 SLUS-20062:
@@ -52217,9 +51909,6 @@ SLUS-20130:
   name: "Street Fighter EX3"
   region: "NTSC-U"
   compat: 5
-  gsHWFixes:
-    getSkipCount: "GSC_SFEX3"
-    halfPixelOffset: 4 # Aligns post effects.
 SLUS-20131:
   name: "Dark Angel - Vampire Apocalypse"
   region: "NTSC-U"
@@ -52279,8 +51968,6 @@ SLUS-20144:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLUS-20145:
   name: "Ring of Red"
   region: "NTSC-U"
@@ -53161,7 +52848,6 @@ SLUS-20331:
   region: "NTSC-U"
   compat: 5
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes light bleed through objects.
     halfPixelOffset: 1 # Fixes light bleed through objects.
     autoFlush: 1 # Fixes light bloom intensity.
 SLUS-20332:
@@ -53187,7 +52873,6 @@ SLUS-20336:
   compat: 5
   gsHWFixes:
     autoFlush: 1 # Fixes lens flares.
-    gpuTargetCLUT: 1 # Fixes lens flares going through objects.
     bilinearUpscale: 2 # Smooths out sun glare textures.
 SLUS-20337:
   name: "X2 - Wolverine's Revenge"
@@ -54037,7 +53722,6 @@ SLUS-20497:
   region: "NTSC-U"
   compat: 5
   gsHWFixes:
-    gpuTargetCLUT: 1 # Fixes bloom and sun rendering in front of everything.
     autoFlush: 1 # Fixes bloom and sun rendering in front of everything.
     halfPixelOffset: 2 # Aligns bloom effect.
     bilinearUpscale: 2 # Reduces color banding of the sun glare.
@@ -54140,7 +53824,6 @@ SLUS-20517:
   gsHWFixes:
     halfPixelOffset: 2 # Fixes ghosting.
     alignSprite: 1 # Fixes vertical lines.
-    gpuTargetCLUT: 1 # Fixes broken water rendering.
 SLUS-20519:
   name: "Tak and The Power of Juju"
   region: "NTSC-U"
@@ -54305,7 +53988,6 @@ SLUS-20550:
   gsHWFixes:
     preloadFrameData: 1 # Fixes licences.
     halfPixelOffset: 3 # Fixes double image.
-    gpuTargetCLUT: 1 # Fixes sun penetrating buildings.
     autoFlush: 1 # Fixes sun occlusion.
     bilinearUpscale: 2 # Fixes sun glare textures to behave like native.
 SLUS-20552:
@@ -54325,8 +54007,6 @@ SLUS-20554:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLUS-20555:
   name: "Reel Fishing 3"
   region: "NTSC-U"
@@ -54524,7 +54204,6 @@ SLUS-20587:
     autoFlush: 1 # Aligns and corrects shadows.
     halfPixelOffset: 2 # Fixes sun and depth line.
     cpuCLUTRender: 1 # Fixes janky coloured cars.
-    gpuTargetCLUT: 1 # Fixes janky coloured cars.
     textureInsideRT: 1 # Fixes car textures.
     cpuSpriteRenderBW: 4 # Alleviates text and sky rendering issues.
     cpuSpriteRenderLevel: 2 # Needed for above.
@@ -55087,8 +54766,6 @@ SLUS-20695:
     vuClampMode: 2 # Fixes SPS in item menu.
   gsHWFixes:
     textureInsideRT: 1 # Fixes rainbow shadow of legions.
-    alignSprite: 1 # Fixes green vertical lines.
-    roundSprite: 2 # Fixes vertical lines and some font artifacts but not completely fixed.
 SLUS-20696:
   name: "Nickelodeon Jimmy Neutron - Boy Genius - Jet Fusion"
   region: "NTSC-U"
@@ -56494,9 +56171,6 @@ SLUS-20948:
   name: "Crimson Tears"
   region: "NTSC-U"
   compat: 5
-  gsHWFixes:
-    halfPixelOffset: 1 # Aligns post effects.
-    nativeScaling: 2 # Fixes post effects.
 SLUS-20949:
   name: "Street Fighter Anniversary Collection"
   region: "NTSC-U"
@@ -57166,7 +56840,6 @@ SLUS-21050:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -57217,12 +56890,6 @@ SLUS-21059:
   compat: 5
   clampModes:
     eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
-  gsHWFixes:
-    textureInsideRT: 1 # Fixes heat haze half screen problem.
-    alignSprite: 1 # Fixes vertical lines.
-    halfPixelOffset: 4 # Align post.
-    nativeScaling: 1 # Fixes depth of field effect.
-    getSkipCount: "GSC_Tekken5"
 SLUS-21060:
   name: "WWE SmackDown! vs. RAW"
   region: "NTSC-U"
@@ -57298,7 +56965,6 @@ SLUS-21075:
     roundSprite: 1 # Further reduces blurriness.
     bilinearUpscale: 1 # Smooths out fire textures.
     nativeScaling: 2 # Fixes post processing.
-    beforeDraw: "OI_HauntingGround" # Fix bloom.
 SLUS-21076:
   name: "Atari Anthology"
   region: "NTSC-U"
@@ -57395,7 +57061,6 @@ SLUS-21095:
   gsHWFixes:
     halfPixelOffset: 2 # Fixes post processing position.
     nativeScaling: 2 # Fixes post effects.
-    gpuTargetCLUT: 2 # Fixes light flicker.
     getSkipCount: "GSC_DTGames"
     estimateTextureRegion: 1 # Improves performance and reduces hash cache size.
     gpuPaletteConversion: 2 # Improves performance and reduces hash cache size.
@@ -57466,7 +57131,6 @@ SLUS-21106:
     cpuSpriteRenderBW: 1 # Fixes textures.
     preloadFrameData: 1 # Fixes numberplates and ensures above targets are valid.
     roundSprite: 1 # Fixes lines in some post-effects.
-    gpuTargetCLUT: 1 # Fixes light occlusion.
     halfPixelOffset: 4 # Reduces post misalignment.
     nativeScaling: 2 # Fixes remaining post misalignment and light bloom and shadows.
 SLUS-21107:
@@ -57770,12 +57434,6 @@ SLUS-21160:
   region: "NTSC-U"
   clampModes:
     eeClampMode: 2 # Fixes camera and stops constant coin noises on Pirates Cove.
-  gsHWFixes:
-    textureInsideRT: 1 # Fixes heat haze half screen problem.
-    alignSprite: 1 # Fixes vertical lines.
-    halfPixelOffset: 4 # Align post.
-    nativeScaling: 1 # Fixes depth of field effect.
-    getSkipCount: "GSC_Tekken5"
 SLUS-21161:
   name: "Fight Night - Round 2"
   region: "NTSC-U"
@@ -58025,7 +57683,6 @@ SLUS-21203:
     autoFlush: 1 # Fixes bloom intensity.
     minimumBlendingLevel: 4 # Fixes multiple lighting effects from lights, computers, cave walls and more.
     nativeScaling: 1 # Fixes post processing.
-    halfPixelOffset: 4 # Fixes offset post processing.
     mipmap: 2 # All Levels - Unclamped breaks LODs
 SLUS-21204:
   name: "Victorious Boxers 2 - Fighting Spirit"
@@ -58295,7 +57952,6 @@ SLUS-21242:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -58410,7 +58066,6 @@ SLUS-21257:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     nativeScaling: 2 # Fixes post effects.
 SLUS-21258:
   name: ".hack//G.U. Vol.1 - Rebirth"
@@ -58493,7 +58148,6 @@ SLUS-21267:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
   memcardFilters:
     - "SLUS-21267"
     - "SLUS-21351"
@@ -59095,7 +58749,6 @@ SLUS-21351:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
   memcardFilters:
     - "SLUS-21267"
     - "SLUS-21351"
@@ -60293,7 +59946,6 @@ SLUS-21570:
   gsHWFixes:
     halfPixelOffset: 5 # Fixes misaligment issues.
     nativeScaling: 2 # Fixes post effects such as the afterburners.
-    gpuTargetCLUT: 1 # Fixes lens flares going through objects.
     bilinearUpscale: 2 # Smooths out sun glare textures.
   compat: 5
 SLUS-21571:
@@ -60445,7 +60097,6 @@ SLUS-21596:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -61487,7 +61138,6 @@ SLUS-21773:
   compat: 5
   gsHWFixes:
     autoFlush: 1 # Fixes lights not appearing.
-    gpuTargetCLUT: 1 # Fixes lights going through darts players.
     bilinearUpscale: 2 # Smooths out lights.
 SLUS-21774:
   name: "Dynasty Warriors 6"
@@ -61602,7 +61252,6 @@ SLUS-21793:
     estimateTextureRegion: 1 # Improves performance and reduces hash cache size.
     gpuPaletteConversion: 2 # Improves performance and reduces hash cache size.
     autoFlush: 1 # Corrects shadows (Currently still broken even with this).
-    gpuTargetCLUT: 2 # Fixes light flicker.
     getSkipCount: "GSC_DTGames"
 SLUS-21794:
   name: "Go, Diego, Go! Great Dinosaur Rescue"
@@ -61655,7 +61304,6 @@ SLUS-21801:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes blurriness.
     bilinearUpscale: 2 # Fixes sun glare textures.
-    gpuTargetCLUT: 1 # Fixes sun penetration.
     nativeScaling: 2 # Fixes post alignment.
     getSkipCount: "GSC_NFSUndercover"
     textureInsideRT: 1 # Fixes sun glare.
@@ -62443,7 +62091,6 @@ SLUS-28019:
   gsHWFixes:
     halfPixelOffset: 2 # Fixes ghosting.
     alignSprite: 1 # Fixes vertical lines.
-    gpuTargetCLUT: 1 # Fixes broken water rendering.
 SLUS-28020:
   name: "Everquest Online Adventures [Beta Vol.1.0]"
   region: "NTSC-U"
@@ -62604,8 +62251,6 @@ SLUS-29003:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
     recommendedBlendingLevel: 3 # Fixes broken skin colour on Vlad and others.
-    autoFlush: 1 # Fixes motion blur effect.
-    halfPixelOffset: 4 # Aligns blur from upscaling.
 SLUS-29004:
   name: "Unison & Dead or Alive 2 Hardcore [Demo]"
   region: "NTSC-U"
@@ -62720,7 +62365,6 @@ SLUS-29038:
   gsHWFixes:
     halfPixelOffset: 2 # Fixes ghosting.
     alignSprite: 1 # Fixes vertical lines.
-    gpuTargetCLUT: 1 # Fixes broken water rendering.
 SLUS-29040:
   name: "Dr. Muto [Demo]"
   region: "NTSC-U"
@@ -62968,7 +62612,6 @@ SLUS-29113:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -63142,7 +62785,6 @@ SLUS-29153:
     recommendedBlendingLevel: 3 # Improves car reflections.
     halfPixelOffset: 2 # Fixes depth lines.
     autoFlush: 2 # Fixes blur and obscures sun behind objects.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     nativeScaling: 2 # Smooths speed blur and corrects some lighting.
     getSkipCount: "GSC_BurnoutGames"
@@ -63157,7 +62799,6 @@ SLUS-29155:
     bilinearUpscale: 2 # Smooths out sun glare textures like native.
     halfPixelOffset: 2 # Fixes blurriness.
     cpuCLUTRender: 1 # Final colour adjustment LUT.
-    gpuTargetCLUT: 1 # Fixes sun penetrating bridges (along with HPO special).
 SLUS-29156:
   name: "Marvel Nemesis - Rise of the Imperfects [Demo]"
   region: "NTSC-U"

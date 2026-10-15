@@ -1853,18 +1853,18 @@ u32 FWlinkIdSalt(void)
 
 #define FW_STATE_VERSION 1
 
-static void fw_freeze_fifo(SaveStateBase& st, fw_fifo& f)
+static void fw_freeze_fifo(SaveStateBase* st, fw_fifo& f)
 {
 	u32 n = f.count, i;
-	st.Freeze(n);
+	SaveState_Freeze(st, n);
 	if (n > FIFO_QUADS)
 		n = FIFO_QUADS;
-	if (st.IsSaving())
+	if (SaveState_IsSaving(st))
 	{
 		for (i = 0; i < n; i++)
 		{
 			u32 v = f.q[(f.head + i) % FIFO_QUADS];
-			st.Freeze(v);
+			SaveState_Freeze(st, v);
 		}
 	}
 	else
@@ -1873,13 +1873,13 @@ static void fw_freeze_fifo(SaveStateBase& st, fw_fifo& f)
 		for (i = 0; i < n; i++)
 		{
 			u32 v = 0;
-			st.Freeze(v);
+			SaveState_Freeze(st, v);
 			fifo_push(&f, v);
 		}
 	}
 }
 
-bool SaveStateBase::fwFreeze()
+bool fwFreeze(SaveStateBase* s)
 {
 	u32 version = FW_STATE_VERSION;
 	u64 now;
@@ -1887,69 +1887,78 @@ bool SaveStateBase::fwFreeze()
 	u32 nev = fw.nev, i;
 	u8 flags;
 
+	/* Optional on a load: a state saved before the controller was modelled
+	 * has no such block, and the controller then starts as a lone node that
+	 * has just been powered on. */
+	if (SaveState_IsLoading(s) && !SaveState_PeekTag(s, "iLink"))
+	{
+		FWclose();
+		return SaveState_IsOkay(s);
+	}
+
 	/* The restored psxRegs.cycle is a different counter from the one the
 	 * clock last read: count on from it rather than take the jump between
 	 * them as time passing. */
-	if (IsLoading())
+	if (SaveState_IsLoading(s))
 		fw.have_raw = false;
 	now = fw_clock();
 	cycle_ticks = fw_cycle_ticks();
 
-	if (!FreezeTag("iLink"))
+	if (!SaveState_FreezeTag(s, "iLink"))
 		return false;
-	Freeze(version);
-	if (IsLoading() && version != FW_STATE_VERSION)
+	SaveState_Freeze(s, version);
+	if (SaveState_IsLoading(s) && version != FW_STATE_VERSION)
 	{
 		if (log_cb)
 			log_cb(RETRO_LOG_WARN, "i.LINK: state has controller version %u, not %u; starting it fresh\n",
 				version, FW_STATE_VERSION);
-		m_error = true;
+		s->error = true;
 		return false;
 	}
 
-	Freeze(fw.regs);
-	Freeze(fw.phy);
-	Freeze(fw.phy_page1);
-	fw_freeze_fifo(*this, fw.ubuf_rx);
-	fw_freeze_fifo(*this, fw.ubuf_tx);
-	fw_freeze_fifo(*this, fw.dbuf_rx[0]);
-	fw_freeze_fifo(*this, fw.dbuf_rx[1]);
-	fw_freeze_fifo(*this, fw.dbuf_tx0);
-	Freeze(fw.nodes);
-	Freeze(fw.phy_id);
+	SaveState_Freeze(s, fw.regs);
+	SaveState_Freeze(s, fw.phy);
+	SaveState_Freeze(s, fw.phy_page1);
+	fw_freeze_fifo(s, fw.ubuf_rx);
+	fw_freeze_fifo(s, fw.ubuf_tx);
+	fw_freeze_fifo(s, fw.dbuf_rx[0]);
+	fw_freeze_fifo(s, fw.dbuf_rx[1]);
+	fw_freeze_fifo(s, fw.dbuf_tx0);
+	SaveState_Freeze(s, fw.nodes);
+	SaveState_Freeze(s, fw.phy_id);
 	flags = (u8)((fw.root ? 1 : 0) | (fw.id_valid ? 2 : 0) | (fw.tx_busy ? 4 : 0));
-	Freeze(flags);
-	Freeze(fw.pht);
-	Freeze(cycle_ticks);
+	SaveState_Freeze(s, flags);
+	SaveState_Freeze(s, fw.pht);
+	SaveState_Freeze(s, cycle_ticks);
 
-	Freeze(nev);
+	SaveState_Freeze(s, nev);
 	if (nev > FW_EVENTS)
 	{
-		m_error = true;
+		s->error = true;
 		return false;
 	}
 	for (i = 0; i < nev; i++)
 	{
 		fw_event& e = fw.ev[i];
-		s64 rel = IsSaving() ? (s64)e.tick - (s64)now : 0;
-		Freeze(rel);
-		Freeze(e.type);
-		Freeze(e.arg);
-		Freeze(e.nquads);
+		s64 rel = SaveState_IsSaving(s) ? (s64)e.tick - (s64)now : 0;
+		SaveState_Freeze(s, rel);
+		SaveState_Freeze(s, e.type);
+		SaveState_Freeze(s, e.arg);
+		SaveState_Freeze(s, e.nquads);
 		if (e.nquads > FW_MAX_QUADS)
 		{
-			m_error = true;
+			s->error = true;
 			return false;
 		}
-		FreezeMem(e.quads, (int)(e.nquads * 4));
-		if (IsLoading())
+		SaveState_FreezeMem(s, e.quads, (int)(e.nquads * 4));
+		if (SaveState_IsLoading(s))
 		{
 			e.tick = rel > 0 ? now + (u64)rel : now;
 			e.seq = fw.next_seq++;
 		}
 	}
 
-	if (IsLoading())
+	if (SaveState_IsLoading(s))
 	{
 		fw.nev = nev;
 		fw.root = (flags & 1) != 0;
@@ -1959,5 +1968,5 @@ bool SaveStateBase::fwFreeze()
 		fw.next_second = (FW_REG(R_CTRL0) & CTRL0_CYCTMREN) ? fw_next_second() : (u64)-1;
 		fw_schedule();
 	}
-	return IsOkay();
+	return SaveState_IsOkay(s);
 }

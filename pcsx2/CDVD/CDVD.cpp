@@ -183,9 +183,7 @@ static void cdvdCreateNewNVM(void)
 }
 
 
-/* BIOS path with the extension swapped, into a caller buffer. Replaces
- * three Path::ReplaceExtension(BiosPath, ...) calls, each of which
- * allocated a std::string to be read straight back as a C string. */
+/* BIOS path with the extension swapped, into a caller buffer. */
 static void cdvdBiosSiblingPath(char* out, size_t out_size, const char* ext)
 {
 	strlcpy(out, BiosPath.c_str(), out_size);
@@ -196,8 +194,11 @@ static void cdvdBiosSiblingPath(char* out, size_t out_size, const char* ext)
 
 void cdvdLoadNVRAM(void)
 {
-	char nvmfile[PCSX2_PATH_MAX];
-	cdvdBiosSiblingPath(nvmfile, sizeof(nvmfile), "nvm");
+	/* One path buffer, the NVRAM's and then the MEC's. */
+	char path[PCSX2_PATH_MAX];
+	const char* nvmfile = path;
+	const char* mecfile = path;
+	cdvdBiosSiblingPath(path, sizeof(path), "nvm");
 	RFILE *fp = filestream_open(nvmfile, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	if (!fp || filestream_read(fp, s_nvram, sizeof(s_nvram)) != (int64_t)sizeof(s_nvram))
 	{
@@ -221,14 +222,11 @@ void cdvdLoadNVRAM(void)
 		}
 	}
 
-	/* The NVRAM handle is done with here.  It used to be left open and
-	 * then overwritten by the MEC open below, which leaked it - one
-	 * RFILE and its 64 KiB stdio buffer per VM start. */
+	/* The NVRAM handle is done with here, before fp is reused. */
 	if (fp)
 		filestream_close(fp);
 
-	char mecfile[PCSX2_PATH_MAX];
-	cdvdBiosSiblingPath(mecfile, sizeof(mecfile), "mec");
+	cdvdBiosSiblingPath(path, sizeof(path), "mec");
 	fp = filestream_open(mecfile, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	if (!fp || filestream_read(fp, &s_mecha_version, sizeof(s_mecha_version)) != (int64_t)sizeof(s_mecha_version))
 	{
@@ -876,17 +874,41 @@ void cdvdReset(void)
 	cdvdCtrlTrayClose();
 }
 
-bool SaveStateBase::cdvdFreeze()
+bool cdvdFreeze(SaveStateBase *s)
 {
-	if (!(FreezeTag("cdvd")))
+	if (!(SaveState_FreezeTag(s, "cdvd")))
 		return false;
 
-	Freeze(cdvd);
-	if (!IsOkay())
+	SaveState_Freeze(s, cdvd);
+	if (!SaveState_IsOkay(s))
 		return false;
 
-	if (IsLoading())
+	if (SaveState_IsLoading(s))
 	{
+		/* mg_size and mg_maxsize bound each other in sceMgWriteData --
+		 * "if (mg_size + SCMDParamCnt > mg_maxsize)" -- so with both
+		 * taken from the state the check is self-consistent and decides
+		 * nothing. mg_size is also the length of the move in
+		 * sceMgReadData. Neither can exceed the buffer they describe. */
+		if (cdvd.mg_maxsize < 0 || cdvd.mg_maxsize > (int)sizeof(cdvd.mg_buffer))
+			cdvd.mg_maxsize = (int)sizeof(cdvd.mg_buffer);
+		if (cdvd.mg_size < 0 || cdvd.mg_size > cdvd.mg_maxsize)
+			cdvd.mg_size = 0;
+
+		/* The result cursor walks a 16-byte buffer. Every runtime
+		 * assignment to the count is a literal 1..16, so the bound holds
+		 * by construction and is never enforced -- and what follows
+		 * SCMDResultBuff in this struct is the CDVD key material, handed
+		 * back a byte at a time through the register read. */
+		if (cdvd.SCMDResultCnt > sizeof(cdvd.SCMDResultBuff))
+			cdvd.SCMDResultCnt = 0;
+		if (cdvd.SCMDResultPos > cdvd.SCMDResultCnt)
+			cdvd.SCMDResultPos = cdvd.SCMDResultCnt;
+		if (cdvd.SCMDParamCnt > sizeof(cdvd.SCMDParamBuff))
+			cdvd.SCMDParamCnt = 0;
+		if (cdvd.SCMDParamPos > cdvd.SCMDParamCnt)
+			cdvd.SCMDParamPos = cdvd.SCMDParamCnt;
+
 		// Make sure the Cdvd source has the expected track loaded into the buffer.
 		// If cdvd.SeekCompleted is cleared it means we need to load the SeekToSector (ie, a
 		// seek is in progress!)
@@ -1013,6 +1035,13 @@ int cdvdReadSector(void)
 		mdest[2061] = 0;
 		mdest[2062] = 0;
 		mdest[2063] = 0;
+	}
+	else if (cdvd.BlockSize == 2368)
+	{
+		/* 2352 bytes of sector and 16 of subchannel Q, which no image
+		 * carries: the Q bytes are zero. */
+		memcpy(mdest, cdr.Transfer, 2352);
+		memset(&mdest[2352], 0, 16);
 	}
 	else
 		memcpy(mdest, cdr.Transfer, cdvd.BlockSize);
@@ -1743,10 +1772,17 @@ static void cdvdWrite04(u8 rt) /* NCOMMAND */
 			break;
 
 		case N_CD_SEEK: // CdSeek
+		{
+			u32 sector;
 			cdvd.Action = cdvdAction_Seek; // Have to do this first, the StartSeek relies on it
-			CDVD_INT(cdvdStartSeek(*reinterpret_cast<uint*>(cdvd.NCMDParamBuff + 0), static_cast<CDVD_MODE_TYPE>(cdvdIsDVD()), false));
+			/* The parameter buffer is bytes; the sector is read out of it as
+			 * the read commands do, not through a pointer that the buffer's
+			 * place in the struct need not align. */
+			memcpy(&sector, cdvd.NCMDParamBuff + 0, sizeof(u32));
+			CDVD_INT(cdvdStartSeek(sector, static_cast<CDVD_MODE_TYPE>(cdvdIsDVD()), false));
 			cdvdUpdateStatus(CDVD_STATUS_SEEK);
 			break;
+		}
 
 		case N_CD_READ: // CdRead
 		{

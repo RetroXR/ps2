@@ -25,6 +25,15 @@
 #include "CDVD/CDVD.h"
 #include "ps2/BiosTools.h"
 
+/* The three instructions that mark the EE thread list, matched against the
+ * code stream to find where it lives. Only this scan uses them. */
+static const u32 ThreadListInstructions[3] =
+{
+	0xac420000, /* sw v0,0x0(v0) */
+	0x00000000, /* no-op */
+	0x00000000  /* no-op */
+};
+
 GS_VideoMode gsVideoMode = GS_VideoMode::Uninitialized;
 bool gsIsInterlaced = false;
 
@@ -96,16 +105,16 @@ void Deci2Reset(void)
 	memset(deci2buffer, 0, sizeof(deci2buffer));
 }
 
-bool SaveStateBase::deci2Freeze()
+bool deci2Freeze(SaveStateBase *s)
 {
-	if (!(FreezeTag( "deci2" )))
+	if (!(SaveState_FreezeTag(s,  "deci2" )))
 		return false;
 
-	Freeze( deci2addr );
-	Freeze( deci2handler );
-	Freeze( deci2buffer );
+	SaveState_Freeze(s, deci2addr);
+	SaveState_Freeze(s, deci2handler);
+	SaveState_Freeze(s, deci2buffer);
 
-	return IsOkay();
+	return SaveState_IsOkay(s);
 }
 
 /*

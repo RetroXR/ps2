@@ -17,6 +17,7 @@
 #include "Vif_Dma.h"
 #include "VUmicro.h"
 #include "x86/newVif.h"
+#include "Config.h"
 
 u32 g_vif0Cycles = 0;
 
@@ -54,8 +55,8 @@ bool _VIF0chain(void)
 	}
 
 	if (vif0.irqoffset.enabled)
-		return VIF0transfer(pMem + vif0.irqoffset.value, vif0ch.qwc * 4 - vif0.irqoffset.value);
-	return VIF0transfer(pMem, vif0ch.qwc * 4);
+		return VIF0transfer(pMem + vif0.irqoffset.value, vif0ch.qwc * 4 - vif0.irqoffset.value, false);
+	return VIF0transfer(pMem, vif0ch.qwc * 4, false);
 }
 
 __fi void vif0SetupTransfer(void)
@@ -103,7 +104,7 @@ __fi void vif0SetupTransfer(void)
 
 	vif0.irqoffset.value = 0;
 	vif0.irqoffset.enabled = false;
-	vif0.done |= hwDmacSrcChainWithStack(vif0ch, ptag->ID);
+	vif0.done |= hwDmacSrcChainWithStack(&vif0ch, ptag->ID);
 
 	if(vif0ch.qwc > 0) vif0.inprogress = 1;
 	//Check TIE bit of CHCR and IRQ bit of tag

@@ -20,6 +20,7 @@
 #include "newVif_UnpackSSE.h"
 #include "common/emitter/c89ops.h"
 #include "../MTVU.h"
+#include "../Config.h"
 
 void dVifReserve(int idx)
 {
@@ -317,7 +318,14 @@ _vifT __fi nVifBlock* dVifCompile(nVifBlock* block, int isFill)
 {
 	nVifStruct& v = nVif[idx];
 
-	// Compile the block now
+	/* Room for the longest routine (num 256, every iteration unrolled)
+	 * before the end of this VIF's 8 MB reserve: VIF1's follows VIF0's
+	 * and microVU0's follows VIF1's. Out of room, the cache starts over;
+	 * block is a copy on the caller's stack, so it survives the reset. */
+	if (v.recWritePtr > v.recReserve->GetPtrEnd() - _256kb)
+		dVifReset(idx);
+
+	/* Compile the block now */
 	x86Ptr = (u8*)(v.recWritePtr);
 
 	// +1 bias keeps 0 as the empty-cell sentinel; reserve is 8MB so u32 always fits

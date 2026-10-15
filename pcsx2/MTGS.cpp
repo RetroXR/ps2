@@ -20,6 +20,7 @@
 #include <cstring>
 #include <list>
 #include <rthreads/rthreads.h>
+#include <rthreads/retro_eventcount.h>
 
 #include <libretro.h>
 
@@ -28,6 +29,8 @@
 #include "MTVU.h"
 #include "WorkEventCount.h"
 #include "MTGSOwner.h"
+#include "PAD/PAD.h"
+#include "../libretro/audio_queue.h"
 #if !defined(_WIN32)
 #include <unistd.h>
 #endif
@@ -69,6 +72,21 @@ union PacketTagType
  * old cursor pair needed live inside the queue now. */
 static retro_spsc_t s_Ring;
 static bool s_RingOk = false;
+
+/* The GS's view of the privileged registers: a copy of PS2MEM_GS taken
+ * on this thread at each vsync, reset and freeze, while the EE is held
+ * in WaitGS. The renderers read display registers at vsync and nothing
+ * else, so a copy taken then is the frame's, and the EE is free to write
+ * the next frame's the moment its vsync is consumed - before the scanout,
+ * the frontend's present and its pacing wait, which the EE then overlaps
+ * instead of idling through. CSR stays in PS2MEM_GS, where the EE keeps
+ * it atomically; the field it carries at the vsync rides in the packet. */
+alignas(64) static u8 s_gs_regs[PS2MEM_GS_REGS];
+
+static __fi void mtgs_sync_regs(void)
+{
+	memcpy(s_gs_regs, PS2MEM_GS, sizeof(s_gs_regs));
+}
 
 static_assert(sizeof(PacketTagType) == 16, "command ring framing is one 16-byte record per packet");
 
@@ -112,6 +130,58 @@ alignas(64) static u64 g_ee_wait_ticks;
 #endif
 
 extern struct retro_hw_render_callback hw_render;
+
+/* How long retro_run waits on an empty ring before it dupes a frame. */
+#define MTGS_WEDGE_MS 1000
+
+/* See MTGSOwner.h. */
+struct mtgs_frame mtgs_pending;
+uint32_t mtgs_presented_mark;
+int mtgs_vsync_drained;
+
+/* The frame gate, MTGSOwner.h. granted counts the frames retro_run let
+ * the EE start and taken those the EE started, so a grant that lands
+ * before the EE reaches the gate is not lost; stop sends the EE out of
+ * the gate to stop there. owed is set while the EE is held behind the
+ * vsync retro_run last consumed: the frontend's thread only. */
+static retro_eventcount_t s_gate_ec;
+static int s_gate_ec_ok;
+static retro_atomic_int_t s_gate_granted = RETRO_ATOMIC_INT_INITIALIZER(0);
+static retro_atomic_int_t s_gate_stop    = RETRO_ATOMIC_INT_INITIALIZER(0);
+static int s_gate_taken;
+static int s_gate_owed;
+
+#define MTGS_GATE_OPEN() \
+	(retro_atomic_load_acquire_int(&s_gate_granted) != s_gate_taken \
+	 || retro_atomic_load_acquire_int(&s_gate_stop) \
+	 || !MTGS::IsOpen())
+
+static void mtgs_gate_notify(void)
+{
+	if (s_gate_ec_ok)
+		retro_eventcount_notify(&s_gate_ec);
+}
+
+/* The EE thread, behind a vsync retro_run consumed: wait for the next
+ * retro_run to let it start the next frame. Sent out to stop, or with
+ * the GS gone, the vsync is where it stops, as a drained one is. */
+static void mtgs_gate_wait(void)
+{
+	while (!MTGS_GATE_OPEN())
+	{
+		const int key = retro_eventcount_prepare_wait(&s_gate_ec);
+		if (MTGS_GATE_OPEN())
+		{
+			retro_eventcount_cancel_wait(&s_gate_ec);
+			break;
+		}
+		retro_eventcount_commit_wait(&s_gate_ec, key);
+	}
+	if (retro_atomic_load_acquire_int(&s_gate_granted) != s_gate_taken)
+		s_gate_taken++;
+	else
+		mtgs_vsync_drained = 1;
+}
 
 /* See GS.h. NULL unless the renderer in use installed them. */
 void (*gs_hw_context_begin)(void) = NULL;
@@ -181,9 +251,18 @@ void MTGS::PostVsyncStart()
 	if (tag)
 	{
 		tag->command = GS_RINGTYPE_VSYNC;
-		tag->data[0] = 0;
+		/* The field this vsync scans out, and whether the privileged
+		 * registers changed since the last one: read here, on the thread
+		 * that owns them, so the consumer needs nothing from the EE's
+		 * state by the time it gets to them. */
+		tag->data[0] = (gsCSRload() & GS_CSR_FIELD) ? 0 : 1;
+		tag->data[1] = (u32)retro_atomic_exchange_int(&s_GSRegistersWritten, 0);
+		/* Where this frame's audio ends: see audio_queue.h. */
+		tag->data[2] = retro_audio_mark();
 		RingWriteEnd();
 	}
+	else
+		mtgs_vsync_drained = 1; /* no ring: nothing to wait for a pause behind */
 
 #ifdef ENABLE_PCSX2_PROFILER
 	{
@@ -193,7 +272,7 @@ void MTGS::PostVsyncStart()
 		if ((++frames % 60) == 0)
 		{
 			const double wall = (double)(now - last_wall);
-			fprintf(stderr, "[overlap] 60 frames: GS idle %.1f%% of wall, EE blocked in WaitGS %.1f%%\n",
+			log_cb(RETRO_LOG_INFO, "[overlap] 60 frames: GS idle %.1f%% of wall, EE blocked in WaitGS %.1f%%\n",
 			        wall > 0 ? 100.0 * (double)(g_gs_idle_ticks - last_idle) / wall : 0.0,
 			        wall > 0 ? 100.0 * (double)(g_ee_wait_ticks - last_wait) / wall : 0.0);
 			last_wall = now; last_idle = g_gs_idle_ticks; last_wait = g_ee_wait_ticks;
@@ -203,14 +282,14 @@ void MTGS::PostVsyncStart()
 	}
 #endif
 
-	// Remove extra frame input lag. With VsyncQueueSize hard-locked to 0 in
-	// the libretro topology, this WaitGS IS the frame-pacing mechanism: it
-	// blocks cpu_thread until the libretro thread (= MTGS thread) drains
-	// the ring through this VSYNC packet.
-	//
-	// (Letting the EE run 1-2 frames ahead of the GS was tried and measured: no
-	// change in wall time, because the EE is not actually waiting here.)
+	/* This wait is the pacing between the two threads: the EE holds here
+	 * until the libretro thread has consumed this vsync packet, which is
+	 * where the GS takes its copy of the registers. */
 	WaitGS(false);
+	/* Consumed by retro_run: the next frame waits for the next one,
+	 * and its input. */
+	if (!mtgs_vsync_drained && s_gate_ec_ok)
+		mtgs_gate_wait();
 }
 
 void MTGS::InitAndReadFIFO(u8* mem, u32 qwc)
@@ -250,6 +329,7 @@ void MTGS::TryOpenGS(void)
 		if (!s_ec_inited)
 		{
 			work_eventcount_init(&s_sem_event);
+			s_gate_ec_ok = retro_eventcount_init(&s_gate_ec);
 			s_ec_inited = true;
 		}
 		s_RingOk = retro_spsc_init(&s_Ring,
@@ -258,8 +338,23 @@ void MTGS::TryOpenGS(void)
 			log_cb(RETRO_LOG_ERROR, "MTGS: command ring allocation failed; GS commands will be dropped\n");
 	}
 
+	/* The GS opens on an empty ring and a live eventcount, as it does in
+	 * a freshly loaded image. A GS closed earlier in this image left the
+	 * eventcount killed by MainLoop's exit tail, and the ring with
+	 * whatever was written after that tail skipped it; a frontend that
+	 * retires the core with dlclose may get the same image, statics and
+	 * all, on the next load. The EE is not producing while the GS is
+	 * closed, so both sides are quiescent here. */
+	if (s_RingOk)
+		retro_spsc_clear(&s_Ring);
+	work_eventcount_reset(&s_sem_event);
+	retro_atomic_store_release_int(&s_gate_granted, 0);
+	s_gate_taken = 0;
+	s_gate_owed  = 0;
+
+	mtgs_sync_regs();
 	GS_HW_CONTEXT_BEGIN();
-	GSopen(EmuConfig.GS, EmuConfig.GS.Renderer, hw_render.context_type, PS2MEM_GS);
+	GSopen(EmuConfig.GS, EmuConfig.GS.Renderer, hw_render.context_type, s_gs_regs);
 	GS_HW_CONTEXT_END();
 
 	retro_atomic_store_release_int(&s_open_flag, true);
@@ -286,18 +381,20 @@ bool MTGS::MainLoop(bool flush_all)
 		{
 			/* The frontend thread must never park unboundedly: a wedged
 			 * producer degrades to duped frames with a live frontend,
-			 * never a frozen process.  100ms only fires when the EE has
-			 * genuinely stopped delivering vsyncs. */
+			 * never a frozen process. A dupe puts the frame it stood in
+			 * for into a later retro_run, so the bound is long enough
+			 * that only a wedge reaches it: a second with nothing at all
+			 * in the ring, not an EE busy recompiling or a slow build. */
 #ifdef ENABLE_PCSX2_PROFILER
 			{
 				const u64 t0 = __builtin_ia32_rdtsc();
-				const bool got = work_eventcount_wait_timed(&s_sem_event, 100);
+				const bool got = work_eventcount_wait_timed(&s_sem_event, MTGS_WEDGE_MS);
 				g_gs_idle_ticks += __builtin_ia32_rdtsc() - t0;
 				if (!got)
 					return false;
 			}
 #else
-			if (!work_eventcount_wait_timed(&s_sem_event, 100))
+			if (!work_eventcount_wait_timed(&s_sem_event, MTGS_WEDGE_MS))
 				return false;
 #endif
 		}
@@ -413,30 +510,62 @@ bool MTGS::MainLoop(bool flush_all)
 				}
 					break;
 				case GS_RINGTYPE_VSYNC:
-					// CSR & 0x2000; is the pageflip id.
-					// flush_all skips GSvsync when multi-threaded (reset/pause drain
-					// without rendering), but in single-threaded mode MainLoop(true)
-					// IS the render path — call GSvsync.
-					if(!flush_all || sthread_get_current_thread_id() == s_thread)
+				{
+					const u32 field = tag.data[0];
+					const u32 registers_written = tag.data[1];
+					const u32 audio_mark = tag.data[2];
+					/* The EE is held in WaitGS behind this packet, so the
+					 * registers are this frame's. The tag is not read past
+					 * here. */
+					mtgs_sync_regs();
+					if (flush_all)
 					{
-						GS_HW_CONTEXT_BEGIN();
-						GSvsync((gsCSRload() & GS_CSR_FIELD) ? 0 : 1,
-						        (bool)retro_atomic_exchange_int(&s_GSRegistersWritten, 0));
-						GS_HW_CONTEXT_END();
+						/* A drain: kept for the next retro_run, not
+						 * presented. See MTGSOwner.h. */
+						memcpy(mtgs_pending.regs, s_gs_regs, sizeof(mtgs_pending.regs));
+						mtgs_pending.audio_mark        = audio_mark;
+						mtgs_pending.field             = field;
+						mtgs_pending.registers_written = registers_written;
+						mtgs_pending.pending           = 1;
+						mtgs_vsync_drained             = 1;
+						break;
 					}
-					else
-						retro_atomic_store_release_int(&s_GSRegistersWritten, 0);
-					break;
+					/* retro_run's frame. The EE waits behind it at the
+					 * frame gate for the next retro_run's input. */
+					s_gate_owed         = 1;
+					mtgs_vsync_drained  = 0;
+					mtgs_presented_mark = audio_mark;
+					consumed += sizeof(PacketTagType);
+					retro_spsc_read_end(&s_Ring, consumed);
+					consumed = 0;
+					/* Idle at the current epoch releases WaitGS's
+					 * empty-wait, including when the vsync's own notify
+					 * landed after this drain began. Entries behind the
+					 * vsync (a soft-reset tag rides along with no notify
+					 * of its own) re-arm the work count so the next call
+					 * drains them. */
+					{
+						const int epoch = work_eventcount_epoch(&s_sem_event);
+						work_eventcount_drained(&s_sem_event, epoch,
+								retro_spsc_read_avail(&s_Ring) != 0);
+					}
+					GS_HW_CONTEXT_BEGIN();
+					GSvsync(field, registers_written != 0);
+					GS_HW_CONTEXT_END();
+					return true;
+				}
 				case GS_RINGTYPE_FREEZE:
 					{
 						MTGS_FreezeData* data = (MTGS_FreezeData*)tag.pointer;
 						int mode = tag.data[0];
+						mtgs_sync_regs();
 						GS_HW_CONTEXT_BEGIN();
 						GSfreeze((FreezeAction)mode, (freezeData*)data->fdata);
 						GS_HW_CONTEXT_END();
 					}
 					break;
 				case GS_RINGTYPE_RESET:
+					mtgs_sync_regs();
 					GS_HW_CONTEXT_BEGIN();
 					GSreset(tag.data[0] != 0);
 					GS_HW_CONTEXT_END();
@@ -452,30 +581,6 @@ bool MTGS::MainLoop(bool flush_all)
 			}
 
 			consumed += sizeof(PacketTagType);
-
-			if (!flush_all && tag.command == GS_RINGTYPE_VSYNC)
-			{
-				retro_spsc_read_end(&s_Ring, consumed);
-				/* Returning mid-ring: the batch acknowledge at the top of
-				 * the outer loop already consumed the notifies for any
-				 * entries still queued behind this vsync.  The eventcount's
-				 * contract -- relied on by WaitForEmpty and by the
-				 * pre-park empty post in WaitForWorkTimed -- is that a
-				 * consumer at RUNNING_0 has drained the ring, and the
-				 * per-frame early exit is the one place this consumer
-				 * breaks it.  Re-arm the sema when entries remain so the
-				 * next WaitForWorkTimed drains them instead of parking
-				 * and waking a producer whose WaitGS(false) rendezvous
-				 * (readbacks, freezes) has not actually completed: a
-				 * producer released early reads a readback buffer the GS
-				 * side never filled, and the stale entry is processed
-				 * late into memory the EE may have reused.  A notify
-				 * racing a concurrent enqueue at worst doubles up; the
-				 * state machine absorbs spurious wakes by design. */
-				if (retro_spsc_read_avail(&s_Ring) != 0)
-					work_eventcount_notify(&s_sem_event);
-				return true;
-			}
 		}
 		retro_spsc_read_end(&s_Ring, consumed);
 		}
@@ -488,6 +593,7 @@ bool MTGS::MainLoop(bool flush_all)
 	 * s_open_flag and exits. */
 	retro_asym_eventcount_notify(&vu1Thread.ecP1Progress);
 	work_eventcount_kill(&s_sem_event);
+	mtgs_gate_notify();
 	return true;
 }
 
@@ -497,11 +603,20 @@ void MTGS::CloseGS(void)
 	GSclose();
 	GS_HW_CONTEXT_END();
 	retro_atomic_store_release_int(&s_open_flag, false);
+	mtgs_gate_notify();
 }
 
 // Waits for the GS to empty out the entire ring buffer contents.
 // This function is allowed to exit after MTGS finished a path1 packet.
 // If isMTVU, then this implies this function is being called from the MTVU thread...
+/* The consumer commits a record only once it has processed it, and the
+ * vsync before its scanout, so an empty ring is a drained one. */
+static int mtgs_ring_drained(void* ctx)
+{
+	(void)ctx;
+	return retro_spsc_read_avail(&s_Ring) == 0;
+}
+
 void MTGS::WaitGS(bool isMTVU)
 {
 	/* See MTGSOwner.h for who drains and why it is decided by who
@@ -510,7 +625,7 @@ void MTGS::WaitGS(bool isMTVU)
 	 * drains it here. */
 	if (!isMTVU)
 	{
-		if (mtgs_wait_drains(sthread_get_current_thread_id(), s_producer_thread, 0))
+		if (MTGS_WAIT_DRAINS(sthread_get_current_thread_id(), s_producer_thread, 0))
 		{
 			/* Entries may have been written without a notify (a frame
 			 * with no completed GIF packets between PostVsyncStart and
@@ -522,9 +637,14 @@ void MTGS::WaitGS(bool isMTVU)
 		if (!IsOpen())
 			return;
 		work_eventcount_notify(&s_sem_event);
-		/* Blocks until the ring drains. The return value (false if the
-		 * ring was killed) is unused, as at the other wait_empty sites. */
-		work_eventcount_wait_empty(&s_sem_event);
+		/* Blocks until the ring drains: until MainLoop has committed
+		 * every record written so far, the vsync among them. The return
+		 * value (false if the ring was killed) is unused, as at the
+		 * other wait_empty sites. */
+		if (s_RingOk)
+			work_eventcount_wait_drained(&s_sem_event, mtgs_ring_drained, NULL);
+		else
+			work_eventcount_wait_empty(&s_sem_event);
 		return;
 	}
 	if (!IsOpen()) /* WaitGS issued on a closed thread! */
@@ -610,6 +730,46 @@ void MTGS::WaitForClose()
 void mtgs_claim_ring(void)
 {
 	MTGS::s_thread = sthread_get_current_thread_id();
+}
+
+/* The frontend's thread, retro_run, after polling: the EE held behind
+ * the last vsync starts the next frame, with this input. */
+int mtgs_frame_gate_open(void)
+{
+	if (!s_gate_owed)
+		return 0;
+	s_gate_owed = 0;
+	pad_input_latch();
+	retro_atomic_fetch_add_int(&s_gate_granted, 1);
+	mtgs_gate_notify();
+	return 1;
+}
+
+/* The frontend's thread: on, an EE at the gate leaves it to stop there;
+ * off before the EE is resumed. A stopped EE took no frame, so none is
+ * owed to it. */
+void mtgs_frame_gate_stop(int on)
+{
+	retro_atomic_store_release_int(&s_gate_stop, on);
+	if (on)
+	{
+		s_gate_owed = 0;
+		mtgs_gate_notify();
+	}
+}
+
+/* The frontend's thread, retro_run, with the EE paused: the registers
+ * are the drained vsync's, whatever has been loaded or written since. */
+int mtgs_present_pending(void)
+{
+	if (!mtgs_pending.pending || !retro_atomic_load_acquire_int(&MTGS::s_open_flag))
+		return 0;
+	mtgs_pending.pending = 0;
+	memcpy(s_gs_regs, mtgs_pending.regs, sizeof(s_gs_regs));
+	GS_HW_CONTEXT_BEGIN();
+	GSvsync(mtgs_pending.field, mtgs_pending.registers_written != 0);
+	GS_HW_CONTEXT_END();
+	return 1;
 }
 
 /* The EE thread, as it starts and as it ends. See MTGSOwner.h. */

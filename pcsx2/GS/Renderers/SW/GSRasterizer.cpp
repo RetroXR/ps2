@@ -44,13 +44,12 @@ GSRasterizer::GSRasterizer(GSDrawScanline* ds, int id, int threads)
 	, m_threads(threads)
 	, m_scanmsk_value(0)
 {
-	memset(&m_pixels, 0, sizeof(m_pixels));
-
 	m_thread_height = compute_best_thread_height(threads);
 
-	m_edge.buff     = static_cast<GSVertexSW*>(memalign_alloc(VECTOR_ALIGNMENT, sizeof(GSVertexSW) * 2048));
+	/* 4096 lines and columns: the 2x drawing's. */
+	m_edge.buff     = static_cast<GSVertexSW*>(memalign_alloc(VECTOR_ALIGNMENT, sizeof(GSVertexSW) * 4096));
 	m_edge.count    = 0;
-	int rows        = (2048 >> m_thread_height) + 16;
+	int rows        = (4096 >> m_thread_height) + 16;
 	m_scanline      = (u8*)memalign_alloc(64, rows);
 
 	for (int i = 0; i < rows; i++)
@@ -104,23 +103,10 @@ int GSRasterizer::FindMyNextScanline(int top) const
 	return top;
 }
 
-int GSRasterizer::GetPixels(bool reset)
-{
-	int pixels = m_pixels.sum;
-
-	if (reset)
-		m_pixels.sum = 0;
-
-	return pixels;
-}
-
 void GSRasterizer::Draw(GSRasterizerData& data)
 {
 	if ((data.vertex && data.vertex_count == 0) || (data.index && data.index_count == 0))
 		return;
-
-	m_pixels.actual = 0;
-	m_pixels.total = 0;
 
 	m_setup_prim = data.setup_prim;
 	m_draw_scanline = data.draw_scanline;
@@ -220,19 +206,50 @@ void GSRasterizer::Draw(GSRasterizerData& data)
 	_mm256_zeroupper();
 #endif
 
-	/* NOTE: 'data.pixels = m_pixels.actual;' used to live here.  data
-	 * is the SHARED GSRasterizerData job object - every worker slicing
-	 * the same draw wrote this one field, and nothing in the tree ever
-	 * read it back.  Besides being a data race, it made all workers
-	 * store to the same cache line on every draw, bouncing that line
-	 * between cores for no result.  m_pixels.sum below is per-worker
-	 * and is what GetPixels() actually reports. */
-	m_pixels.sum += m_pixels.actual;
+}
+
+/* A point at 2x covers its native pixel's 2x2. */
+void GSRasterizer::DrawPoint2x(const GSVertexSW* vertex, const u16* index)
+{
+	const GSVertexSW& v = vertex[*index];
+	const GSVector4i p = GSVector4i(v.p * GSVector4(0.5f) + GSVector4(0.5f)) << 1;
+	int y;
+
+	if (p.x < m_scissor.left || p.x >= m_scissor.right || p.y < m_scissor.top || p.y >= m_scissor.bottom)
+		return;
+
+	for (y = p.y; y < p.y + 2; y++)
+	{
+		if (IsOneOfMyScanlines(y))
+		{
+			m_setup_prim(vertex, index, GSVertexSW::zero(), m_local);
+
+			DrawScanline(2, p.x, y, v);
+		}
+	}
 }
 
 template <bool scissor_test>
 void GSRasterizer::DrawPoint(const GSVertexSW* vertex, int vertex_count, const u16* index, int index_count)
 {
+	if (m_local.gd->sel.hires)
+	{
+		static constexpr u16 tmp_index[1] = {0};
+		int i;
+
+		if (index)
+		{
+			for (i = 0; i < index_count; i++)
+				DrawPoint2x(vertex, index + i);
+		}
+		else
+		{
+			for (i = 0; i < vertex_count; i++)
+				DrawPoint2x(vertex + i, tmp_index);
+		}
+		return;
+	}
+
 	if (index)
 	{
 		for (int i = 0; i < index_count; i++, index++)
@@ -275,7 +292,30 @@ void GSRasterizer::DrawPoint(const GSVertexSW* vertex, int vertex_count, const u
 	}
 }
 
+/* A line at 2x is two rows (or columns) thick, as its native pixels'
+ * 2x2s are: the line and itself a row (column) further across. */
 void GSRasterizer::DrawLine(const GSVertexSW* vertex, const u16* index)
+{
+	if (m_local.gd->sel.hires && !HasEdge())
+	{
+		static constexpr u16 tmp_index[2] = {0, 1};
+		GSVertexSW v[2];
+		const GSVector4 dp = (vertex[index[1]].p - vertex[index[0]].p).abs();
+		const GSVector4 off = ((dp < dp.yxwz()).mask() & 1) ? GSVector4(1.0f, 0.0f, 0.0f, 0.0f) : GSVector4(0.0f, 1.0f, 0.0f, 0.0f);
+
+		v[0] = vertex[index[0]];
+		v[1] = vertex[index[1]];
+		DrawLineImpl(v, tmp_index);
+		v[0].p = (v[0].p + off).xyzw(v[0].p);
+		v[1].p = (v[1].p + off).xyzw(v[1].p);
+		DrawLineImpl(v, tmp_index);
+		return;
+	}
+
+	DrawLineImpl(vertex, index);
+}
+
+void GSRasterizer::DrawLineImpl(const GSVertexSW* vertex, const u16* index)
 {
 	const GSVertexSW& v0 = vertex[index[0]];
 	const GSVertexSW& v1 = vertex[index[1]];
@@ -288,9 +328,11 @@ void GSRasterizer::DrawLine(const GSVertexSW* vertex, const u16* index)
 
 	if (HasEdge())
 	{
+		/* Each edge is flushed on its own: one is at most a pixel per
+		 * scissor row or column, which is what the buffer holds. */
 		DrawEdge(v0, v1, dv, i, 0);
+		Flush(vertex, index, GSVertexSW::zero(), true);
 		DrawEdge(v0, v1, dv, i, 1);
-
 		Flush(vertex, index, GSVertexSW::zero(), true);
 
 		return;
@@ -510,10 +552,12 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		int orientation = a.mask();
 		int side = ((a | b) ^ c).mask() ^ 2; // evil
 
+		/* Each edge is flushed on its own: see DrawLineImpl. */
 		DrawEdge((GSVertexSW&)v0, (GSVertexSW&)v1, (GSVertexSW&)dv0, orientation & 1, side & 1);
+		Flush(vertex, index, GSVertexSW::zero(), true);
 		DrawEdge((GSVertexSW&)v0, (GSVertexSW&)v2, (GSVertexSW&)dv1, orientation & 2, side & 2);
+		Flush(vertex, index, GSVertexSW::zero(), true);
 		DrawEdge((GSVertexSW&)v1, (GSVertexSW&)v2, (GSVertexSW&)dv2, orientation & 4, side & 4);
-
 		Flush(vertex, index, GSVertexSW::zero(), true);
 	}
 }
@@ -681,10 +725,12 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 		int orientation = a.mask();
 		int side        = ((a | b) ^ c).mask() ^ 2; // evil
 
+		/* Each edge is flushed on its own: see DrawLineImpl. */
 		DrawEdge(v0, v1, dv0, orientation & 1, side & 1);
+		Flush(vertex, index, GSVertexSW::zero(), true);
 		DrawEdge(v0, v2, dv1, orientation & 2, side & 2);
+		Flush(vertex, index, GSVertexSW::zero(), true);
 		DrawEdge(v1, v2, dv2, orientation & 4, side & 4);
-
 		Flush(vertex, index, GSVertexSW::zero(), true);
 	}
 }
@@ -760,7 +806,8 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 
 	GSVertexSW scan = v[0];
 
-	if ((m_scanmsk_value & 2) == 0 && m_local.gd->sel.IsSolidRect())
+	/* The rect fill addresses local memory's own swizzle. */
+	if ((m_scanmsk_value & 2) == 0 && m_local.gd->sel.IsSolidRect() && !m_local.gd->sel.hires)
 	{
 		if (m_threads == 1)
 		{
@@ -768,8 +815,6 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 
 			int pixels = r.width() * r.height();
 
-			m_pixels.actual += pixels;
-			m_pixels.total += pixels;
 		}
 		else
 		{
@@ -785,8 +830,6 @@ void GSRasterizer::DrawSprite(const GSVertexSW* vertex, const u16* index)
 
 				int pixels = r.width() * r.height();
 
-				m_pixels.actual += pixels;
-				m_pixels.total += pixels;
 
 				top = r.bottom + ((m_threads - 1) << m_thread_height);
 			}
@@ -1077,18 +1120,16 @@ void GSRasterizer::Flush(const GSVertexSW* vertex, const u16* index, const GSVer
 
 void GSRasterizer::DrawScanline(int pixels, int left, int top, const GSVertexSW& scan)
 {
-	if ((m_scanmsk_value & 2) && (m_scanmsk_value & 1) == (top & 1)) return;
-	m_pixels.actual += pixels;
-	m_pixels.total += ((left + pixels + (PIXELS_PER_LOOP - 1)) & ~(PIXELS_PER_LOOP - 1)) - (left & ~(PIXELS_PER_LOOP - 1));
+	/* SCANMSK skips native lines; the 2x drawing's line is half its row. */
+	if ((m_scanmsk_value & 2) && (m_scanmsk_value & 1) == ((top >> m_local.gd->sel.hires) & 1)) return;
 
 	m_draw_scanline(pixels, left, top, scan, m_local);
 }
 
 void GSRasterizer::DrawEdge(int pixels, int left, int top, const GSVertexSW& scan)
 {
-	if ((m_scanmsk_value & 2) && (m_scanmsk_value & 1) == (top & 1)) return;
-	m_pixels.actual += 1;
-	m_pixels.total += PIXELS_PER_LOOP - 1;
+	/* SCANMSK skips native lines; the 2x drawing's line is half its row. */
+	if ((m_scanmsk_value & 2) && (m_scanmsk_value & 1) == ((top >> m_local.gd->sel.hires) & 1)) return;
 
 	m_draw_edge(pixels, left, top, scan, m_local);
 }
@@ -1109,10 +1150,13 @@ void GSSingleRasterizer::Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& da
 
 void GSSingleRasterizer::Draw(GSRasterizerData& data)
 {
+	/* Out of room for code: start the reserve again; a draw whose
+	 * functions still cannot be made is dropped. */
 	if (!unlikely(m_ds.SetupDraw(data)))
 	{
 		m_ds.ResetCodeCache();
-		m_ds.SetupDraw(data);
+		if (!m_ds.SetupDraw(data))
+			return;
 	}
 
 	m_r.Draw(data);
@@ -1127,16 +1171,11 @@ bool GSSingleRasterizer::IsSynced() const
 	return true;
 }
 
-int GSSingleRasterizer::GetPixels(bool reset /*= true*/)
-{
-	return m_r.GetPixels(reset);
-}
-
 GSRasterizerList::GSRasterizerList(int threads)
 {
 	m_thread_height = compute_best_thread_height(threads);
 
-	const int rows = (2048 >> m_thread_height) + 16;
+	const int rows = (4096 >> m_thread_height) + 16;
 	m_scanline = static_cast<u8*>(memalign_alloc(64, rows));
 
 	for (int i = 0; i < rows; i++)
@@ -1170,11 +1209,13 @@ void GSRasterizerList::Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& data
 {
 	GSVector4i r = data->bbox.rintersect(data->scissor);
 
+	/* As in GSSingleRasterizer::Draw. */
 	if (unlikely(!m_ds.SetupDraw(*data.get())))
 	{
 		Sync();
 		m_ds.ResetCodeCache();
-		m_ds.SetupDraw(*data.get());
+		if (!m_ds.SetupDraw(*data.get()))
+			return;
 	}
 
 	int top = r.top >> m_thread_height;
@@ -1206,18 +1247,6 @@ bool GSRasterizerList::IsSynced() const
 	}
 
 	return true;
-}
-
-int GSRasterizerList::GetPixels(bool reset)
-{
-	int pixels = 0;
-
-	for (size_t i = 0; i < m_workers.size(); i++)
-	{
-		pixels += m_r[i]->GetPixels(reset);
-	}
-
-	return pixels;
 }
 
 std::unique_ptr<IRasterizer> GSRasterizerList::Create(int threads)

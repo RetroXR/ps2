@@ -35,125 +35,32 @@
 #define BigEndian64(in) __builtin_bswap64(in) // or we could use the asm function bswap...
 #endif
 
-struct macroblock_8{
-	u8 Y[16][16];		//0
-	u8 Cb[8][8];		//1
-	u8 Cr[8][8];		//2
-};
+#include "ipu_macroblock.h"
+#include "ipu_decoder.h"
 
-struct macroblock_16{
-	s16 Y[16][16];			//0
-	s16 Cb[8][8];			//1
-	s16 Cr[8][8];			//2
-};
 
-struct macroblock_rgb32{
-	struct {
-		u8 r, g, b, a;
-	} c[16][16];
-};
-
-struct rgb16_t{
-	u16 r:5, g:5, b:5, a:1;
-};
-
-struct macroblock_rgb16{
-	rgb16_t	c[16][16];
-};
-
-struct decoder_t {
-	/* first, state that carries information from one macroblock to the */
-	/* next inside a slice, and is never used outside of mpeg2_slice() */
-
-	/* DCT coefficients - should be kept aligned ! */
-	s16 DCTblock[64];
-
-	u8 niq[64];			//non-intraquant matrix (sequence header)
-	u8 iq[64];			//intraquant matrix (sequence header)
-
-	macroblock_8 mb8;
-	macroblock_16 mb16;
-	macroblock_rgb32 rgb32;
-	macroblock_rgb16 rgb16;
-
-	uint ipu0_data;		// amount of data in the output macroblock (in QWC)
-	uint ipu0_idx;
-
-	int quantizer_scale;
-
-	/* now non-slice-specific information */
-
-	/* picture header stuff */
-
-	/* what type of picture this is (I, P, B, D) */
-	int coding_type;
-
-	/* picture coding extension stuff */
-
-	/* predictor for DC coefficients in intra blocks */
-	s16 dc_dct_pred[3];
-
-	/* quantization factor for intra dc coefficients */
-	int intra_dc_precision;
-	/* top/bottom/both fields */
-	int picture_structure;
-	/* bool to indicate all predictions are frame based */
-	int frame_pred_frame_dct;
-	/* bool to indicate whether intra blocks have motion vectors */
-	/* (for concealment) */
-	int concealment_motion_vectors;
-	/* bit to indicate which quantization table to use */
-	int q_scale_type;
-	/* bool to use different vlc tables */
-	int intra_vlc_format;
-	/* used for DMV MC */
-	int top_field_first;
-	// Pseudo Sign Offset
-	int sgn;
-	// Dither Enable
-	int dte;
-	// Output Format
-	int ofm;
-	// Macroblock type
-	int macroblock_modes;
-	// DC Reset
-	int dcr;
-	// Coded block pattern
-	int coded_block_pattern;
-
-	/* stuff derived from bitstream */
-
-	/* the zigzag scan we're supposed to be using, true for alt, false for normal */
-	bool scantype;
-
-	int mpeg1;
-
-	template< typename T >
-	void SetOutputTo( T& obj )
-	{
-		uint mb_offset = ((uptr)&obj - (uptr)&mb8);
-		ipu0_idx	= mb_offset / 16;
-		ipu0_data	= sizeof(obj)/16;
-	}
-
-	u128* GetIpuDataPtr()
-	{
-		return ((u128*)&mb8) + ipu0_idx;
-	}
-
-	void AdvanceIpuDataBy(uint amt)
-	{
-		ipu0_idx  += amt;
-		ipu0_data -= amt;
-	}
-};
+/* yuv2rgb and ipu_dither reach mb8.Y, rgb32 and rgb16 with aligned
+ * 16-byte loads and stores. The macroblock types themselves promise no
+ * alignment -- giving them one would grow decoder_t past the size the
+ * savestate writes -- so the guarantee comes from decoder being aligned
+ * and these three sitting at multiples of 16 inside it. Add a field
+ * ahead of one of them and this stops the build rather than faulting in
+ * the middle of an FMV. */
+static_assert(offsetof(decoder_t, mb8)   % 16 == 0, "mb8 must stay 16-byte aligned within decoder_t");
+static_assert(offsetof(decoder_t, rgb32) % 16 == 0, "rgb32 must stay 16-byte aligned within decoder_t");
+static_assert(offsetof(decoder_t, rgb16) % 16 == 0, "rgb16 must stay 16-byte aligned within decoder_t");
 
 alignas(16) extern decoder_t decoder;
 alignas(16) extern tIPU_BP g_BP;
 
-MULTI_ISA_DEF(
-	extern void ipu_dither(const macroblock_rgb32& rgb32, macroblock_rgb16& rgb16, const int dte);
+/* One build: the SSE2 form this is written in measures the same at every
+ * tier, so there is nothing for a per-ISA copy to pick up. */
+#ifdef __cplusplus
+extern "C"
+#endif
+void ipu_dither(const macroblock_rgb32 *rgb32, macroblock_rgb16 *rgb16, const int dte);
 
+MULTI_ISA_DEF(
 	void IPUWorker();
 )
 

@@ -1,4 +1,6 @@
 #include "common/emitter/c89ops.h"
+#include <stdlib.h> /* abort */
+#include "../Config.h"
 /*  PCSX2 - PS2 Emulator for PCs
  *  Copyright (C) 2002-2010  PCSX2 Dev Team
  *
@@ -19,6 +21,12 @@
 #include "../Vif.h"
 #include "../VU.h"
 #include "../R3000A.h"
+
+/* The emitter cursor and the SIMD-type tags: the one definition of each
+ * (x86types.h declares them extern). */
+thread_local u8* x86Ptr PCSX2_TLS_INITIAL_EXEC = nullptr;
+thread_local XMMSSEType g_xmmtypes[iREGCNT_XMM] PCSX2_TLS_INITIAL_EXEC = {XMMT_INT};
+
 u16 g_x86AllocCounter = 0;
 static u16 g_xmmAllocCounter = 0;
 
@@ -160,6 +168,12 @@ int _getFreeXMMreg(u32 maxreg)
 		return tempi;
 	}
 
+	/* Every register is needed by the instruction being compiled, so
+	 * there is nothing to evict. Each caller indexes xmmregs (and the
+	 * microVU map in COP2 mode) with the result; -1 there writes the
+	 * memory in front of those arrays. Stop at the cause instead. */
+	log_cb(RETRO_LOG_ERROR, "Recompiler: all %u XMM registers are needed by one instruction\n", maxreg);
+	abort();
 	return -1;
 }
 

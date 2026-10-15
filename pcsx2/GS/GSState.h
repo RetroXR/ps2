@@ -199,6 +199,11 @@ protected:
 	void UpdateContext();
 	void UpdateScissor();
 
+	// Re-applies what the GIFRegHandler* functions do to a register on the
+	// way in. Defrost restores registers with a raw copy, so none of it
+	// happens there; see the definition for why that matters.
+	void NormalizeRestoredRegs();
+
 	void UpdateVertexKick();
 
 	void GrowVertexBuffer();
@@ -268,6 +273,8 @@ public:
 	const GSDrawingEnvironment* m_draw_env = &m_env;
 	GSDrawingContext* m_context = nullptr;
 	GSVector4i temp_draw_rect = {};
+	/* Counts the times a savestate replaced local memory as a whole. */
+	u32 m_mem_restores = 0;
 
 	// Vertex / quad utility functions (ported from upstream refactor 26bd916e3),
 	// used by the texture-shuffle detection refactor. The triangle-class path of
@@ -295,9 +302,6 @@ public:
 	static void GetQuadRasterizedPoints(GSVector4& xy, GSVector4& tex, bool keep_order = true);
 
 	bool m_mipmap = false;
-	// When set, local memory is authoritative for the current Move(): skip reading GPU
-	// targets back over the source region.
-	bool m_move_mem_authoritative = false;
 	bool m_texflush_flag = false;
 	bool m_isPackedUV_HackFlag = false;
 	bool m_channel_shuffle = false;
@@ -391,6 +395,10 @@ public:
 			__fi int Block() const { return FBP << 5; }
 		};
 
+		// One less than the GSVideoMode enumerator, so that the six named
+		// modes index the six-row VideoMode* tables directly. Unknown has
+		// no row and lands on -1; read it through VideoModeRow() rather
+		// than subscripting with it. IsAnalogue() wants the raw value.
 		int videomode = 0;
 		int interlaced = 0;
 		int FFMD = 0;
@@ -399,6 +407,14 @@ public:
 		PCRTCDisplay PCRTCDisplays[2] = {};
 
 		bool IsAnalogue();
+
+		// The row of the VideoMode* tables to read for the current mode.
+		// GetVideoMode() returns Unknown whenever SMODE1.CMOD holds a value
+		// identifying no colorburst -- a 2-bit field, so a game can write
+		// one -- and Unknown has no row of its own, so it reads as NTSC.
+		// Without this the subtraction above gave -1 and every one of the
+		// table reads went an element before the start.
+		__fi int VideoModeRow() const { return (videomode < 0) ? 0 : videomode; }
 
 		// Calculates which display is closest to matching zero offsets in either direction.
 		GSVector2i NearestToZeroOffset();
@@ -489,7 +505,6 @@ public:
 	bool  CanUpscale()            { return (m_ops && m_ops->can_upscale) ? m_ops->can_upscale(this) : false; }
 	float GetUpscaleMultiplier()  { return (m_ops && m_ops->get_upscale_multiplier) ? m_ops->get_upscale_multiplier(this) : 1.0f; }
 	float GetTextureScaleFactor() { return (m_ops && m_ops->get_texture_scale_factor) ? m_ops->get_texture_scale_factor(this) : 1.0f; }
-	float GetModXYOffset();
 	GSTexture* LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVector2i& offset, float* scale, const GSVector2i& size)
 	{
 		return (m_ops && m_ops->lookup_palette_source) ? m_ops->lookup_palette_source(this, CBP, CPSM, CBW, &offset, scale, &size) : nullptr;
@@ -551,7 +566,6 @@ public:
 	void InitReadFIFO(u8* mem, int len);
 
 	void SoftReset(u32 mask);
-	void WriteCSR(u32 csr) { m_regs->CSR.U32[1] = csr; }
 	void ReadFIFO(u8* mem, int size);
 	void ReadLocalMemoryUnsync(u8* mem, int qwc, GIFRegBITBLTBUF BITBLTBUF, GIFRegTRXPOS TRXPOS, GIFRegTRXREG TRXREG);
 	void Transfer(const u8* mem, u32 size);

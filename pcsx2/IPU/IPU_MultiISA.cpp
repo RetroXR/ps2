@@ -32,6 +32,9 @@
 #include "yuv2rgb.h"
 #include "IPU_MultiISA.h"
 #include "ipu_dct_lut.h"
+#include "ipu_bitstream.h"
+#include "ipu_csc.h"
+#include "ipu_idct.h"
 
 // the IPU is fixed to 16 byte strides (128-bit / QWC resolution):
 static const uint decoder_stride = 16;
@@ -70,422 +73,63 @@ static constexpr mpeg2_scan_pack make_scan_pack(void)
 
 alignas(16) const mpeg2_scan_pack mpeg2_scan = make_scan_pack();
 
+/* See ipu_decode_state.h. One copy, shared by every ISA's decoder. */
+struct ipu_decode_state ipu_decode = { 0, 1, 1 };
+
 #endif
 
 MULTI_ISA_UNSHARED_START
-
-static void ipu_csc(macroblock_8& mb8, macroblock_rgb32& rgb32, int sgn);
-static void ipu_vq(macroblock_rgb16& rgb16, u8* indx4);
 
 // --------------------------------------------------------------------------------------
 //  Buffer reader
 // --------------------------------------------------------------------------------------
 
-__ri static u32 UBITS(uint bits)
+__fi static u32 UBITS(uint bits)
 {
-	uint readpos8 = g_BP.BP/8;
-
-	uint result = BigEndian(*(u32*)( (u8*)g_BP.internal_qwc + readpos8 ));
-	uint bp7 = (g_BP.BP & 7);
-	result <<= bp7;
-	result >>= (32 - bits);
-
-	return result;
+	return ipu_bits_u32(g_BP.internal_qwc[0]._u8, g_BP.BP, bits);
 }
 
-__ri static s32 SBITS(uint bits)
+__fi static s32 SBITS(uint bits)
 {
-	// Read an unaligned 32 bit value and then shift the bits up and then back down.
-
-	uint readpos8 = g_BP.BP/8;
-
-	/* memcpy: the bitstream position is byte-, not word-aligned, so a
-	 * typed s32 load is UB.  Do the left shift in the unsigned domain:
-	 * shifting a negative/overflowing int is UB too, and the bit
-	 * pattern is identical. */
-	u32 rawbits;
-	memcpy(&rawbits, (const s8*)g_BP.internal_qwc + readpos8, sizeof(rawbits));
-	uint bp7 = (g_BP.BP & 7);
-	s32 result = (s32)(BigEndian(rawbits) << bp7);
-	result >>= (32 - bits);
-
-	return result;
+	return ipu_bits_s32(g_BP.internal_qwc[0]._u8, g_BP.BP, bits);
 }
 
-#define GETWORD() g_BP.FillBuffer(16)
+#define GETWORD() ipu_bp_fill_buffer(&g_BP, 16)
 
 // Removes bits from the bitstream.  This is done independently of UBITS/SBITS because a
 // lot of mpeg streams have to read ahead and rewind bits and re-read them at different
 // bit depths or sign'age.
-#define DUMPBITS(num) g_BP.Advance(num)
+#define DUMPBITS(num) ipu_bp_advance(&g_BP, num)
 
 __fi static u32 GETBITS(uint num)
 {
 	uint ret = UBITS(num);
-	g_BP.Advance(num);
+	ipu_bp_advance(&g_BP, num);
 	return ret;
 }
 
-// whenever reading fractions of bytes. The low bits always come from the next byte
-// while the high bits come from the current byte
-__ri static u8 getBits64(u8 *address)
+__fi static u8 getBits64(u8 *address)
 {
-	if (!g_BP.FillBuffer(64)) return 0;
-
-	const u8* readpos = &g_BP.internal_qwc[0]._u8[g_BP.BP/8];
-
-	if (uint shift = (g_BP.BP & 7))
-	{
-		u64 mask = (0xff >> shift);
-		mask = mask | (mask << 8) | (mask << 16) | (mask << 24) | (mask << 32) | (mask << 40) | (mask << 48) | (mask << 56);
-
-		*(u64*)address = ((~mask & *(u64*)(readpos + 1)) >> (8 - shift)) | (((mask) & *(u64*)readpos) << shift);
-	}
-	else
-		*(u64*)address = *(u64*)readpos;
-
-	g_BP.Advance(64);
-
+	if (!ipu_bp_fill_buffer(&g_BP, 64)) return 0;
+	ipu_bits_copy64(g_BP.internal_qwc[0]._u8, g_BP.BP, address);
+	ipu_bp_advance(&g_BP, 64);
 	return 1;
 }
 
-// whenever reading fractions of bytes. The low bits always come from the next byte
-// while the high bits come from the current byte
-__ri static u8 getBits32(u8 *address)
+__fi static u8 getBits32(u8 *address)
 {
-	if (!g_BP.FillBuffer(32)) return 0;
-
-	const u8* readpos = &g_BP.internal_qwc->_u8[g_BP.BP/8];
-
-	if(uint shift = (g_BP.BP & 7))
-	{
-		u32 mask = (0xff >> shift);
-		mask = mask | (mask << 8) | (mask << 16) | (mask << 24);
-
-		u32 lo_, hi_;
-		memcpy(&lo_, readpos, sizeof(lo_));
-		memcpy(&hi_, readpos + 1, sizeof(hi_));
-		const u32 merged_ = ((~mask & hi_) >> (8 - shift)) | ((mask & lo_) << shift);
-		memcpy(address, &merged_, sizeof(merged_));
-	}
-	else
-	{
-		// Bit position-aligned -- no masking/shifting necessary
-		u32 word_;
-		memcpy(&word_, readpos, sizeof(word_));
-		memcpy(address, &word_, sizeof(word_));
-	}
-
+	if (!ipu_bp_fill_buffer(&g_BP, 32)) return 0;
+	ipu_bits_copy32(g_BP.internal_qwc[0]._u8, g_BP.BP, address);
 	return 1;
 }
 
-__ri static u8 getBits8(u8 *address)
+__fi static u8 getBits8(u8 *address)
 {
-	if (!g_BP.FillBuffer(8)) return 0;
-
-	const u8* readpos     = &g_BP.internal_qwc[0]._u8[g_BP.BP/8];
-
-	if (uint shift = (g_BP.BP & 7))
-	{
-		uint mask     = (0xff >> shift);
-		*(u8*)address = (((~mask) & readpos[1]) >> (8 - shift)) | (((mask) & *readpos) << shift);
-	}
-	else
-		*(u8*)address = *(u8*)readpos;
-
+	if (!ipu_bp_fill_buffer(&g_BP, 8)) return 0;
+	ipu_bits_copy8(g_BP.internal_qwc[0]._u8, g_BP.BP, address);
 	return 1;
 }
 
-
-#define W1 2841 /* 2048*sqrt (2)*cos (1*pi/16) */
-#define W2 2676 /* 2048*sqrt (2)*cos (2*pi/16) */
-#define W3 2408 /* 2048*sqrt (2)*cos (3*pi/16) */
-#define W5 1609 /* 2048*sqrt (2)*cos (5*pi/16) */
-#define W6 1108 /* 2048*sqrt (2)*cos (6*pi/16) */
-#define W7 565  /* 2048*sqrt (2)*cos (7*pi/16) */
-
-/*
- * In legal streams, the IDCT output should be between -384 and +384.
- * In corrupted streams, it is possible to force the IDCT output to go
- * to +-3826 - this is the worst case for a column IDCT where the
- * column inputs are 16-bit values.
- */
-
-__fi static void BUTTERFLY(int& t0, int& t1, int w0, int w1, int d0, int d1)
-{
-	int tmp = w0 * (d0 + d1);
-	t0 = tmp + (w1 - w0) * d1;
-	t1 = tmp - (w1 + w0) * d0;
-}
-
-#if _M_SSE >= 0x401
-static inline __m128i pair_const(int lo, int hi)
-{
-	return _mm_set1_epi32((int)((unsigned)(hi & 0xffff) << 16) | (unsigned)(lo & 0xffff));
-}
-#endif
-
-__ri static void IDCT_Block(s16* block)
-{
-	/* ---- row pass: unchanged scalar code, keeps its all-zero fast path */
-	for (int i = 0; i < 8; i++)
-	{
-		s16* const rblock = block + 8 * i;
-		if (!(rblock[1] | ((s32*)rblock)[1] | ((s32*)rblock)[2] |
-				((s32*)rblock)[3]))
-		{
-			u32 tmp = (u16)(rblock[0] << 3);
-			tmp |= tmp << 16;
-			((s32*)rblock)[0] = tmp;
-			((s32*)rblock)[1] = tmp;
-			((s32*)rblock)[2] = tmp;
-			((s32*)rblock)[3] = tmp;
-			continue;
-		}
-
-		int a0, a1, a2, a3;
-		{
-			const int d0 = (rblock[0] << 11) + 128;
-			const int d1 = rblock[1];
-			const int d2 = rblock[2] << 11;
-			const int d3 = rblock[3];
-			const int t0 = d0 + d2;
-			const int t1 = d0 - d2;
-			const int t2 = W6 * d3 + W2 * d1;
-			const int t3 = W6 * d1 - W2 * d3;
-			a0 = t0 + t2; a1 = t1 + t3; a2 = t1 - t3; a3 = t0 - t2;
-		}
-		int b0, b1, b2, b3;
-		{
-			const int d0 = rblock[4], d1 = rblock[5], d2 = rblock[6], d3 = rblock[7];
-			int t0 = W7 * d3 + W1 * d0;
-			int t1 = W7 * d0 - W1 * d3;
-			const int t2 = W3 * d1 + W5 * d2;
-			const int t3 = W3 * d2 - W5 * d1;
-			b0 = t0 + t2; b3 = t1 + t3;
-			t0 -= t2; t1 -= t3;
-			b1 = ((t0 + t1) * 181) >> 8;
-			b2 = ((t0 - t1) * 181) >> 8;
-		}
-		rblock[0] = (a0 + b0) >> 8;
-		rblock[1] = (a1 + b1) >> 8;
-		rblock[2] = (a2 + b2) >> 8;
-		rblock[3] = (a3 + b3) >> 8;
-		rblock[4] = (a3 - b3) >> 8;
-		rblock[5] = (a2 - b2) >> 8;
-		rblock[6] = (a1 - b1) >> 8;
-		rblock[7] = (a0 - b0) >> 8;
-	}
-
-#if _M_SSE >= 0x401
-	/* ---- column pass: eight columns in parallel.
-	 *
-	 * Each row of the block is one contiguous vector of eight s16, and
-	 * column k's inputs are lane k of rows 0..7, so no transpose is
-	 * needed.  The butterflies expand to plain product pairs
-	 *   t2 = W6*d3 + W2*d1,  t3 = W6*d1 - W2*d3
-	 * which is exactly what pmaddwd computes from interleaved 16-bit
-	 * operands - one instruction per pair instead of a 32-bit multiply
-	 * chain, which is where this beats what the compiler emits from the
-	 * scalar form. */
-	const __m128i r0 = _mm_load_si128((const __m128i*)(block + 8 * 0));
-	const __m128i r1 = _mm_load_si128((const __m128i*)(block + 8 * 1));
-	const __m128i r2 = _mm_load_si128((const __m128i*)(block + 8 * 2));
-	const __m128i r3 = _mm_load_si128((const __m128i*)(block + 8 * 3));
-	const __m128i r4 = _mm_load_si128((const __m128i*)(block + 8 * 4));
-	const __m128i r5 = _mm_load_si128((const __m128i*)(block + 8 * 5));
-	const __m128i r6 = _mm_load_si128((const __m128i*)(block + 8 * 6));
-	const __m128i r7 = _mm_load_si128((const __m128i*)(block + 8 * 7));
-
-	const __m128i k_w6w2 = pair_const(W6, W2);
-	const __m128i k_nw2w6 = pair_const(-W2, W6);
-	const __m128i k_w7w1 = pair_const(W7, W1);
-	const __m128i k_nw1w7 = pair_const(-W1, W7);
-	const __m128i k_w3w5 = pair_const(W3, W5);
-	const __m128i k_nw5w3 = pair_const(-W5, W3);
-	const __m128i k_round = _mm_set1_epi32(65536);
-	const __m128i k_181 = _mm_set1_epi32(181);
-
-	__m128i lo[8];
-	for (int h = 0; h < 2; h++)
-	{
-		const __m128i i31 = h ? _mm_unpackhi_epi16(r3, r1) : _mm_unpacklo_epi16(r3, r1);
-		const __m128i i74 = h ? _mm_unpackhi_epi16(r7, r4) : _mm_unpacklo_epi16(r7, r4);
-		const __m128i i56 = h ? _mm_unpackhi_epi16(r5, r6) : _mm_unpacklo_epi16(r5, r6);
-
-		const __m128i e0 = h ? _mm_cvtepi16_epi32(_mm_srli_si128(r0, 8)) : _mm_cvtepi16_epi32(r0);
-		const __m128i e2 = h ? _mm_cvtepi16_epi32(_mm_srli_si128(r2, 8)) : _mm_cvtepi16_epi32(r2);
-
-		const __m128i d0 = _mm_add_epi32(_mm_slli_epi32(e0, 11), k_round);
-		const __m128i d2 = _mm_slli_epi32(e2, 11);
-		const __m128i t0 = _mm_add_epi32(d0, d2);
-		const __m128i t1 = _mm_sub_epi32(d0, d2);
-		const __m128i t2 = _mm_madd_epi16(i31, k_w6w2);
-		const __m128i t3 = _mm_madd_epi16(i31, k_nw2w6);
-
-		const __m128i a0 = _mm_add_epi32(t0, t2);
-		const __m128i a1 = _mm_add_epi32(t1, t3);
-		const __m128i a2 = _mm_sub_epi32(t1, t3);
-		const __m128i a3 = _mm_sub_epi32(t0, t2);
-
-		const __m128i u0 = _mm_madd_epi16(i74, k_w7w1);
-		const __m128i u1 = _mm_madd_epi16(i74, k_nw1w7);
-		const __m128i u2 = _mm_madd_epi16(i56, k_w3w5);
-		const __m128i u3 = _mm_madd_epi16(i56, k_nw5w3);
-
-		const __m128i b0 = _mm_add_epi32(u0, u2);
-		const __m128i b3 = _mm_add_epi32(u1, u3);
-		const __m128i s0 = _mm_srai_epi32(_mm_sub_epi32(u0, u2), 8);
-		const __m128i s1 = _mm_srai_epi32(_mm_sub_epi32(u1, u3), 8);
-		const __m128i b1 = _mm_mullo_epi32(_mm_add_epi32(s0, s1), k_181);
-		const __m128i b2 = _mm_mullo_epi32(_mm_sub_epi32(s0, s1), k_181);
-
-		const __m128i o0 = _mm_srai_epi32(_mm_add_epi32(a0, b0), 17);
-		const __m128i o1 = _mm_srai_epi32(_mm_add_epi32(a1, b1), 17);
-		const __m128i o2 = _mm_srai_epi32(_mm_add_epi32(a2, b2), 17);
-		const __m128i o3 = _mm_srai_epi32(_mm_add_epi32(a3, b3), 17);
-		const __m128i o4 = _mm_srai_epi32(_mm_sub_epi32(a3, b3), 17);
-		const __m128i o5 = _mm_srai_epi32(_mm_sub_epi32(a2, b2), 17);
-		const __m128i o6 = _mm_srai_epi32(_mm_sub_epi32(a1, b1), 17);
-		const __m128i o7 = _mm_srai_epi32(_mm_sub_epi32(a0, b0), 17);
-		if (h == 0)
-		{
-			lo[0] = o0; lo[1] = o1; lo[2] = o2; lo[3] = o3;
-			lo[4] = o4; lo[5] = o5; lo[6] = o6; lo[7] = o7;
-		}
-		else
-		{
-			_mm_store_si128((__m128i*)(block + 8 * 0), _mm_packs_epi32(lo[0], o0));
-			_mm_store_si128((__m128i*)(block + 8 * 1), _mm_packs_epi32(lo[1], o1));
-			_mm_store_si128((__m128i*)(block + 8 * 2), _mm_packs_epi32(lo[2], o2));
-			_mm_store_si128((__m128i*)(block + 8 * 3), _mm_packs_epi32(lo[3], o3));
-			_mm_store_si128((__m128i*)(block + 8 * 4), _mm_packs_epi32(lo[4], o4));
-			_mm_store_si128((__m128i*)(block + 8 * 5), _mm_packs_epi32(lo[5], o5));
-			_mm_store_si128((__m128i*)(block + 8 * 6), _mm_packs_epi32(lo[6], o6));
-			_mm_store_si128((__m128i*)(block + 8 * 7), _mm_packs_epi32(lo[7], o7));
-		}
-	}
-#else
-	for (int i = 0; i < 8; i++)
-	{
-		s16* const cblock = block + i;
-
-		int a0, a1, a2, a3;
-		{
-			const int d0 = (cblock[8 * 0] << 11) + 65536;
-			const int d1 = cblock[8 * 1];
-			const int d2 = cblock[8 * 2] << 11;
-			const int d3 = cblock[8 * 3];
-			const int t0 = d0 + d2;
-			const int t1 = d0 - d2;
-			int t2;
-			int t3;
-			BUTTERFLY(t2, t3, W6, W2, d3, d1);
-			a0 = t0 + t2;
-			a1 = t1 + t3;
-			a2 = t1 - t3;
-			a3 = t0 - t2;
-		}
-
-		int b0, b1, b2, b3;
-		{
-			const int d0 = cblock[8 * 4];
-			const int d1 = cblock[8 * 5];
-			const int d2 = cblock[8 * 6];
-			const int d3 = cblock[8 * 7];
-			int t0, t1, t2, t3;
-			BUTTERFLY(t0, t1, W7, W1, d3, d0);
-			BUTTERFLY(t2, t3, W3, W5, d1, d2);
-			b0 = t0 + t2;
-			b3 = t1 + t3;
-			t0 = (t0 - t2) >> 8;
-			t1 = (t1 - t3) >> 8;
-			b1 = (t0 + t1) * 181;
-			b2 = (t0 - t1) * 181;
-		}
-
-		cblock[8 * 0] = (a0 + b0) >> 17;
-		cblock[8 * 1] = (a1 + b1) >> 17;
-		cblock[8 * 2] = (a2 + b2) >> 17;
-		cblock[8 * 3] = (a3 + b3) >> 17;
-		cblock[8 * 4] = (a3 - b3) >> 17;
-		cblock[8 * 5] = (a2 - b2) >> 17;
-		cblock[8 * 6] = (a1 - b1) >> 17;
-		cblock[8 * 7] = (a0 - b0) >> 17;
-	}
-#endif
-}
-
-__ri static void IDCT_Copy(s16* block, u8* dest, const int stride)
-{
-	IDCT_Block(block);
-
-	/* Saturating pack does what the clip table did - negatives to 0,
-	 * above 255 to 255 - for a whole row at a time, and does it for
-	 * every input rather than the table's -384..639 window.  That
-	 * window was not a bound on the data: the comment above IDCT_Block
-	 * records that a corrupted stream can drive a column output to
-	 * +-3826, and indexing a 1024-byte table with that read up to three
-	 * kilobytes past its end. */
-#if _M_SSE >= 0x200
-	const __m128i zero = _mm_setzero_si128();
-	for (int i = 0; i < 8; i++)
-	{
-		const __m128i row = _mm_load_si128(reinterpret_cast<const __m128i*>(block));
-		_mm_storel_epi64(reinterpret_cast<__m128i*>(dest), _mm_packus_epi16(row, row));
-		_mm_store_si128(reinterpret_cast<__m128i*>(block), zero);
-
-		dest += stride;
-		block += 8;
-	}
-#else
-	/* Same clamp, written out: targets without the x86 intrinsics still
-	 * must not index a table with an out-of-range IDCT output. */
-	for (int i = 0; i < 8; i++)
-	{
-		for (int j = 0; j < 8; j++)
-		{
-			const int v = block[j];
-			dest[j] = (u8)((v < 0) ? 0 : ((v > 255) ? 255 : v));
-			block[j] = 0;
-		}
-
-		dest += stride;
-		block += 8;
-	}
-#endif
-}
-
-
-// stride = increment for dest in 16-bit units (typically either 8 [128 bits] or 16 [256 bits]).
-__ri static void IDCT_Add(const int last, s16* block, s16* dest, const int stride)
-{
-	// on the IPU, stride is always assured to be multiples of QWC (bottom 3 bits are 0).
-
-	if (last != 129 || (block[0] & 7) == 4)
-	{
-		IDCT_Block(block);
-
-		const r128 zero = r128_zero();
-		for (int i = 0; i < 8; i++)
-		{
-			r128_store(dest, r128_load(block));
-			r128_store(block, zero);
-
-			dest += stride;
-			block += 8;
-		}
-	}
-	else
-	{
-		const u16 DC     = static_cast<u16>((static_cast<s32>(block[0]) + 4) >> 3);
-		const r128 dc128 = r128_from_u32_dup(static_cast<u32>(DC) | (static_cast<u32>(DC) << 16));
-		block[0] = block[63] = 0;
-
-		for (int i = 0; i < 8; ++i)
-			r128_store((dest + (stride * i)), dc128);
-	}
-}
 
 /* Bitstream and buffer needs to be reallocated in order for successful
    reading of the old data. Here the old data stored in the 2nd slot
@@ -493,8 +137,14 @@ __ri static void IDCT_Add(const int last, s16* block, s16* dest, const int strid
    into 1st slot is copied to the 2nd slot. Which will later be copied
    back to the 1st slot when 128bits have been read.
 */
-static const DCTtabLut * tab;
-static int mbaCount = 0;
+/* A coefficient read in two halves, suspended between them for more
+ * bitstream: the second half needs only whether the code was an escape
+ * and its level, so those travel in ipu_cmd.pos[5], which a savestate
+ * carries - bit 0 the escape, bits 8 and up the level, 2 set to say it
+ * is there. 1 is what a state from before this held, with nothing to go
+ * on: that block ends there. */
+#define IPU_DCT_RESUME(esc, lvl) (2 | ((esc) ? 1 : 0) | ((int)(lvl) << 8))
+#define IPU_DCT_LEGACY_RESUME    1
 
 static int GetMacroblockModes(void)
 {
@@ -701,6 +351,9 @@ __ri static bool get_intra_block(void)
 	int quantizer_scale = decoder.quantizer_scale;
 	s16 * dest = decoder.DCTblock;
 	u16 code;
+	const DCTtabLut * tab;
+	int esc = 0;
+	int lvl = 0;
 
 	/* decode AC coefficients */
 	for (int i=1 + ipu_cmd.pos[4]; ; i++)
@@ -732,7 +385,9 @@ __ri static bool get_intra_block(void)
 					return true;
 				}
 
-				i += (tab->run == 65) ? GETBITS(6) : tab->run;
+				esc = tab->run == 65;
+				lvl = tab->level;
+				i += esc ? GETBITS(6) : tab->run;
 				if (i >= 64)
 				{
 					ipu_cmd.pos[4] = 0;
@@ -740,19 +395,30 @@ __ri static bool get_intra_block(void)
 				}
 				/* fall-through */
 
-			case 1:
+			default:
 				{
+					if (ipu_cmd.pos[5] == IPU_DCT_LEGACY_RESUME)
+					{
+						ipu_cmd.pos[4] = 0;
+						ipu_cmd.pos[5] = 0;
+						return true;
+					}
+					if (ipu_cmd.pos[5] != 0)
+					{
+						esc = ipu_cmd.pos[5] & 1;
+						lvl = ipu_cmd.pos[5] >> 8;
+					}
 					if (!GETWORD())
 					{
 						ipu_cmd.pos[4] = i - 1;
-						ipu_cmd.pos[5] = 1;
+						ipu_cmd.pos[5] = IPU_DCT_RESUME(esc, lvl);
 						return false;
 					}
 
 					uint j = scan[i];
 					int val;
 
-					if (tab->run==65) /* escape */
+					if (esc) /* escape */
 					{
 						if(!decoder.mpeg1)
 						{
@@ -773,7 +439,7 @@ __ri static bool get_intra_block(void)
 					}
 					else
 					{
-						val = (tab->level * quantizer_scale * quant_matrix[i]) >> 4;
+						val = (lvl * quantizer_scale * quant_matrix[i]) >> 4;
 						if(decoder.mpeg1) /* oddification */
 							val = (val - 1) | 1;
 
@@ -806,6 +472,9 @@ __ri static bool get_non_intra_block(int * last)
 	int quantizer_scale = decoder.quantizer_scale;
 	s16 * dest = decoder.DCTblock;
 	u16 code;
+	const DCTtabLut * tab;
+	int esc = 0;
+	int lvl = 0;
 
 	/* decode AC coefficients */
 	for (i= ipu_cmd.pos[4] ; ; i++)
@@ -837,7 +506,9 @@ __ri static bool get_non_intra_block(int * last)
 					return true;
 				}
 
-				i += (tab->run == 65) ? GETBITS(6) : tab->run;
+				esc = tab->run == 65;
+				lvl = tab->level;
+				i += esc ? GETBITS(6) : tab->run;
 				if (i >= 64)
 				{
 					*last = i;
@@ -846,17 +517,29 @@ __ri static bool get_non_intra_block(int * last)
 				}
 				/* fall-through */
 
-			case 1:
+			default:
+				if (ipu_cmd.pos[5] == IPU_DCT_LEGACY_RESUME)
+				{
+					*last = i;
+					ipu_cmd.pos[4] = 0;
+					ipu_cmd.pos[5] = 0;
+					return true;
+				}
+				if (ipu_cmd.pos[5] != 0)
+				{
+					esc = ipu_cmd.pos[5] & 1;
+					lvl = ipu_cmd.pos[5] >> 8;
+				}
 				if (!GETWORD())
 				{
 					ipu_cmd.pos[4] = i;
-					ipu_cmd.pos[5] = 1;
+					ipu_cmd.pos[5] = IPU_DCT_RESUME(esc, lvl);
 					return false;
 				}
 
 				j = scan[i];
 
-				if (tab->run==65) /* escape */
+				if (esc) /* escape */
 				{
 					if (!decoder.mpeg1)
 					{
@@ -878,7 +561,7 @@ __ri static bool get_non_intra_block(int * last)
 				else
 				{
 					int bit1 = SBITS(1);
-					val = ((2 * tab->level + 1) * quantizer_scale * quant_matrix[i]) >> 5;
+					val = ((2 * lvl + 1) * quantizer_scale * quant_matrix[i]) >> 5;
 					val = (val ^ bit1) - bit1;
 					DUMPBITS(1);
 				}
@@ -917,7 +600,7 @@ __ri static bool slice_intra_DCT(const int cc, u8 * const dest, const int stride
 	if (!get_intra_block())
 		return false;
 
-	IDCT_Copy(decoder.DCTblock, dest, stride);
+	ipu_idct_copy(decoder.DCTblock, dest, stride);
 
 	return true;
 }
@@ -932,7 +615,7 @@ __ri static bool slice_non_intra_DCT(s16 * const dest, const int stride, const b
 	if (!get_non_intra_block(&last))
 		return false;
 
-	IDCT_Add(last, decoder.DCTblock, dest, stride);
+	ipu_idct_add(last, decoder.DCTblock, dest, stride);
 
 	return true;
 }
@@ -945,7 +628,6 @@ __ri static bool mpeg2sliceIDEC(void)
 {
 	u16 code;
 
-	static bool ready_to_decode = true;
 	switch (ipu_cmd.pos[0])
 	{
 		case 0:
@@ -959,7 +641,7 @@ __ri static bool mpeg2sliceIDEC(void)
 
 		case 1:
 			ipu_cmd.pos[0] = 1;
-			if (!g_BP.FillBuffer(32))
+			if (!ipu_bp_fill_buffer(&g_BP, 32))
 				return false;
 			/* fall-through */
 
@@ -1068,14 +750,14 @@ __ri static bool mpeg2sliceIDEC(void)
 						}
 
 						// Send The MacroBlock via DmaIpuFrom
-						ipu_csc(mb8, rgb32, decoder.sgn);
+						ipu_csc(&mb8, &rgb32, decoder.sgn, g_ipu_thresh);
 
 						if (decoder.ofm == 0)
-							decoder.SetOutputTo(rgb32);
+							ipu_decoder_set_output(&decoder, &rgb32, sizeof(rgb32));
 						else
 						{
-							ipu_dither(rgb32, rgb16, decoder.dte);
-							decoder.SetOutputTo(rgb16);
+							::ipu_dither(&rgb32, &rgb16, decoder.dte);
+							ipu_decoder_set_output(&decoder, &rgb16, sizeof(rgb16));
 						}
 						ipu_cmd.pos[1] = 2;
 
@@ -1083,9 +765,9 @@ __ri static bool mpeg2sliceIDEC(void)
 
 					case 2:
 						{
-							if (ready_to_decode == true)
+							if (ipu_decode.idec_ready)
 							{
-								ready_to_decode = false;
+								ipu_decode.idec_ready = 0;
 								IPUCoreStatus.WaitingOnIPUFrom = false;
 								IPUCoreStatus.WaitingOnIPUTo = false;
 								IPU_INT_PROCESS(64); // Should probably be much higher, but Myst 3 doesn't like it right now.
@@ -1093,8 +775,8 @@ __ri static bool mpeg2sliceIDEC(void)
 								return false;
 							}
 
-							uint read = ipu_fifo.out.write((u32*)decoder.GetIpuDataPtr(), decoder.ipu0_data);
-							decoder.AdvanceIpuDataBy(read);
+							uint read = ipu_fifo.out.write((u32*)ipu_decoder_data_ptr(&decoder), decoder.ipu0_data);
+							ipu_decoder_advance(&decoder, read);
 
 							if (decoder.ipu0_data != 0)
 							{
@@ -1104,7 +786,7 @@ __ri static bool mpeg2sliceIDEC(void)
 								return false;
 							}
 
-							mbaCount = 0;
+							ipu_decode.mba_count = 0;
 							if (read)
 							{
 								IPUCoreStatus.WaitingOnIPUFrom = true;
@@ -1115,7 +797,7 @@ __ri static bool mpeg2sliceIDEC(void)
 						/* fall-through */
 
 					case 3:
-						ready_to_decode = true;
+						ipu_decode.idec_ready = 1;
 						for (;;)
 						{
 							if (!GETWORD())
@@ -1138,7 +820,7 @@ __ri static bool mpeg2sliceIDEC(void)
 							else switch (UBITS(11))
 							{
 								case 8:		/* macroblock_escape */
-									mbaCount += 33;
+									ipu_decode.mba_count += 33;
 									/* fall-through */
 
 								case 15:	/* macroblock_stuffing (MPEG1 only) */
@@ -1151,9 +833,9 @@ __ri static bool mpeg2sliceIDEC(void)
 						}
 
 						DUMPBITS(mba->len);
-						mbaCount += mba->mba;
+						ipu_decode.mba_count += mba->mba;
 
-						if (mbaCount)
+						if (ipu_decode.mba_count)
 							decoder.dc_dct_pred[0] =
 							decoder.dc_dct_pred[1] =
 							decoder.dc_dct_pred[2] = 128 << decoder.intra_dc_precision;
@@ -1190,10 +872,10 @@ finish_idec:
 
 				if (bit8 == 0)
 				{
-					g_BP.Align();
+					ipu_bp_align(&g_BP);
 					for (;;)
 					{
-						if (!g_BP.FillBuffer(24))
+						if (!ipu_bp_fill_buffer(&g_BP, 24))
 						{
 							ipu_cmd.pos[0] = 3;
 							return false;
@@ -1232,7 +914,6 @@ finish_idec:
 __fi static bool mpeg2_slice(void)
 {
 	int DCT_offset, DCT_stride;
-	static bool ready_to_decode = true;
 
 	macroblock_8& mb8 = decoder.mb8;
 	macroblock_16& mb16 = decoder.mb16;
@@ -1252,7 +933,7 @@ __fi static bool mpeg2_slice(void)
 			/* fallthrough */
 
 		case 1:
-			if (!g_BP.FillBuffer(32))
+			if (!ipu_bp_fill_buffer(&g_BP, 32))
 			{
 				ipu_cmd.pos[0] = 1;
 				return false;
@@ -1481,24 +1162,24 @@ __fi static bool mpeg2_slice(void)
 			ipuRegs.ctrl.SCD = 0;
 			coded_block_pattern = decoder.coded_block_pattern;
 
-			decoder.SetOutputTo(mb16);
+			ipu_decoder_set_output(&decoder, &mb16, sizeof(mb16));
 
 			/* fallthrough */
 
 		case 3:
 			{
-				if (ready_to_decode == true)
+				if (ipu_decode.bdec_ready)
 				{
 					ipu_cmd.pos[0]  = 3;
-					ready_to_decode = false;
+					ipu_decode.bdec_ready = 0;
 					IPUCoreStatus.WaitingOnIPUFrom = false;
 					IPUCoreStatus.WaitingOnIPUTo = false;
 					IPU_INT_PROCESS(64); // Should probably be much higher, but Myst 3 doesn't like it right now.
 					return false;
 				}
 
-				uint read = ipu_fifo.out.write((u32*)decoder.GetIpuDataPtr(), decoder.ipu0_data);
-				decoder.AdvanceIpuDataBy(read);
+				uint read = ipu_fifo.out.write((u32*)ipu_decoder_data_ptr(&decoder), decoder.ipu0_data);
+				ipu_decoder_advance(&decoder, read);
 
 				if (decoder.ipu0_data != 0)
 				{
@@ -1508,7 +1189,7 @@ __fi static bool mpeg2_slice(void)
 					return false;
 				}
 
-				mbaCount = 0;
+				ipu_decode.mba_count = 0;
 				if (read)
 				{
 					IPUCoreStatus.WaitingOnIPUFrom = true;
@@ -1530,11 +1211,11 @@ __fi static bool mpeg2_slice(void)
 
 				if (bit8 == 0)
 				{
-					g_BP.Align();
+					ipu_bp_align(&g_BP);
 
 					for (;;)
 					{
-						if (!g_BP.FillBuffer(24))
+						if (!ipu_bp_fill_buffer(&g_BP, 24))
 						{
 							ipu_cmd.pos[0] = 4;
 							return false;
@@ -1565,7 +1246,7 @@ __fi static bool mpeg2_slice(void)
 			break;
 	}
 
-	ready_to_decode = true;
+	ipu_decode.bdec_ready = 1;
 	return true;
 }
 
@@ -1577,7 +1258,7 @@ __fi static bool ipuVDEC(u32 val)
 	switch (ipu_cmd.pos[0])
 	{
 		case 0:
-			if (!g_BP.FillBuffer(32))
+			if (!ipu_bp_fill_buffer(&g_BP, 32))
 				return false;
 
 			switch ((val >> 26) & 3)
@@ -1714,11 +1395,11 @@ __ri static bool ipuCSC(tIPU_CMD_CSC csc)
 			if (!getBits64((u8*)&decoder.mb8 + 8 * ipu_cmd.pos[0])) return false;
 		}
 
-		ipu_csc(decoder.mb8, decoder.rgb32, 0);
+		ipu_csc(&decoder.mb8, &decoder.rgb32, 0, g_ipu_thresh);
 
 		if (csc.OFM)
 		{
-			ipu_dither(decoder.rgb32, decoder.rgb16, csc.DTE);
+			::ipu_dither(&decoder.rgb32, &decoder.rgb16, csc.DTE);
 			ipu_cmd.pos[1] += ipu_fifo.out.write(((u32*) & decoder.rgb16) + 4 * ipu_cmd.pos[1], 32 - ipu_cmd.pos[1]);
 			if (ipu_cmd.pos[1] < 32)
 			{
@@ -1752,7 +1433,7 @@ __ri static bool ipuPACK(tIPU_CMD_CSC csc)
 			if (!getBits64((u8*)&decoder.rgb32 + 8 * ipu_cmd.pos[0])) return false;
 		}
 
-		ipu_dither(decoder.rgb32, decoder.rgb16, csc.DTE);
+		::ipu_dither(&decoder.rgb32, &decoder.rgb16, csc.DTE);
 
 		if (csc.OFM)
 		{
@@ -1765,7 +1446,7 @@ __ri static bool ipuPACK(tIPU_CMD_CSC csc)
 		}
 		else
 		{
-			ipu_vq(decoder.rgb16, g_ipu_indx4);
+			ipu_vq(&decoder.rgb16, g_ipu_indx4, g_ipu_vqclut);
 			ipu_cmd.pos[1] += ipu_fifo.out.write(((u32*)g_ipu_indx4) + 4 * ipu_cmd.pos[1], 8 - ipu_cmd.pos[1]);
 			if (ipu_cmd.pos[1] < 8)
 			{
@@ -1784,73 +1465,6 @@ __ri static bool ipuPACK(tIPU_CMD_CSC csc)
 // --------------------------------------------------------------------------------------
 //  CORE Functions (referenced from MPEG library)
 // --------------------------------------------------------------------------------------
-
-__fi static void ipu_csc(macroblock_8& mb8, macroblock_rgb32& rgb32, int sgn)
-{
-	int i;
-	u8* p = (u8*)&rgb32;
-
-	yuv2rgb();
-
-	if (g_ipu_thresh[0] > 0)
-	{
-		for (i = 0; i < 16*16; i++, p += 4)
-		{
-			if ((p[0] < g_ipu_thresh[0]) && (p[1] < g_ipu_thresh[0]) && (p[2] < g_ipu_thresh[0]))
-				*(u32*)p = 0;
-			else if ((p[0] < g_ipu_thresh[1]) && (p[1] < g_ipu_thresh[1]) && (p[2] < g_ipu_thresh[1]))
-				p[3] = 0x40;
-		}
-	}
-	else if (g_ipu_thresh[1] > 0)
-	{
-		for (i = 0; i < 16*16; i++, p += 4)
-		{
-			if ((p[0] < g_ipu_thresh[1]) && (p[1] < g_ipu_thresh[1]) && (p[2] < g_ipu_thresh[1]))
-				p[3] = 0x40;
-		}
-	}
-	if (sgn)
-	{
-		/* p has been advanced through the whole macroblock by the
-		 * threshold pass above; without this reset the XOR walks the
-		 * kilobyte PAST rgb32 whenever a threshold is active, flipping
-		 * bits in whatever follows in decoder_t instead of the pixels. */
-		p = (u8*)&rgb32;
-		for (i = 0; i < 16*16; i++, p += 4)
-			*(u32*)p ^= 0x808080;
-	}
-}
-
-__fi static void ipu_vq(macroblock_rgb16& rgb16, u8* indx4)
-{
-	const auto closest_index = [&](int i, int j) {
-		u8 index = 0;
-		int min_distance = INT_MAX;
-		for (u8 k = 0; k < 16; ++k)
-		{
-			const int dr = rgb16.c[i][j].r - g_ipu_vqclut[k].r;
-			const int dg = rgb16.c[i][j].g - g_ipu_vqclut[k].g;
-			const int db = rgb16.c[i][j].b - g_ipu_vqclut[k].b;
-			const int distance = dr * dr + dg * dg + db * db;
-
-				/* Ties: the manual (8.6.3) describes a sequential scan
-			 * i=0..15 taking the minimum, so the lowest index wins -
-			 * which the strict > below implements. */
-			if (min_distance > distance)
-			{
-				index = k;
-				min_distance = distance;
-			}
-		}
-
-		return index;
-	};
-
-	for (int i = 0; i < 16; ++i)
-		for (int j = 0; j < 8; ++j)
-			indx4[i * 8 + j] = closest_index(i, 2 * j + 1) << 4 | closest_index(i, 2 * j);
-}
 
 __noinline void IPUWorker(void)
 {

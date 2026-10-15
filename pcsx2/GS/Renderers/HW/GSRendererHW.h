@@ -42,7 +42,6 @@ class GSRendererHW : public GSRenderer
 
 	// Set by a move handler to request that the current transfer bypass the texture
 	// cache and run on local memory (with memory treated as authoritative).
-	bool m_force_cpu_move = false;
 
 public:
 	static constexpr int MAX_FRAMEBUFFER_HEIGHT = 1280;
@@ -104,6 +103,7 @@ private:
 
 	template <bool linear>
 	void RoundSpriteOffset();
+	void SnapSpriteEdges(bool centre_linear);
 
 	void DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex, const TextureMinMaxResult& tmm);
 
@@ -131,6 +131,8 @@ private:
 	bool IsSinglePageDraw() const;
 	bool NextDrawColClip() const;
 	bool IsPossibleChannelShuffle() const;
+	bool IsChannelShuffleIdentity(bool position) const;
+	bool IsPageCopy() const;
 	bool NextDrawMatchesShuffle() const;
 	bool IsSplitTextureShuffle(GSTextureCache::Target* rt);
 	GSVector4i GetSplitTextureShuffleDrawRect() const;
@@ -279,6 +281,25 @@ private:
 	u32 m_last_channel_shuffle_fbmsk = 0;
 	u32 m_last_channel_shuffle_fbp = 0;
 	u32 m_last_channel_shuffle_end_block = 0;
+	// The shuffle was drawn as the game's own sprites, so the draws after it are not repeats to skip.
+	bool m_channel_shuffle_partial = false;
+	// The shuffle copies a buffer page by page; the draws after it continue it whatever their sprites are.
+	bool m_channel_shuffle_page_copy = false;
+	// What the shuffle's draws have written so far, in the target's pixels; a
+	// draw within it repeats one already done and is skipped.
+	GSVector4i m_channel_shuffle_written = GSVector4i::zero();
+	// The target's page layout, to place a draw that starts on a later page.
+	u32 m_last_channel_shuffle_tbw = 0;
+	GSVector2i m_last_channel_shuffle_pgs = GSVector2i(64, 32);
+	bool ChannelShuffleCovered() const;
+	static GSVector4i JoinedRect(const GSVector4i& a, const GSVector4i& b);
+	bool DrawWithinPage(u32 psm) const;
+	bool MagnifiesTexture() const;
+	bool ShuffleKeepsLayout() const;
+	// The context whose scissor followed a draw onto another target's page.
+	GSDrawingContext* m_scissor_moved = nullptr;
+	// The sprites' edges sit on native pixels (textured, their coordinates travel as ST).
+	bool m_sprite_edges_snapped = false;
 
 	GIFRegFRAME m_split_clear_start = {};
 	GIFRegZBUF m_split_clear_start_Z = {};
@@ -329,6 +350,7 @@ public:
 	TextureShuffleInfo DetectTextureShuffleImpl();
 	void DetectTextureShuffle();
 	void DetectTextureShuffleSecondPass(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
+	bool IsSampleMapDraw(const GSTextureCache::Source* tex);
 	GSVector4 RealignTargetTextureCoordinate(const GSTextureCache::Source* tex);
 	GSVector4i ComputeBoundingBox(const GSVector2i& rtsize, float rtscale);
 	void MergeSprite(GSTextureCache::Source* tex);
@@ -363,6 +385,8 @@ public:
 	/// Returns true if the draws appear to be a manual deswizzle.
 	void HandleManualDeswizzle();
 
+	/// Puts the scissor back after a draw moved onto another target's page.
+	void RestoreScissor();
 	/// Offsets the current draw, used for RT-in-RT. Offsets are relative to the *current* FBP, not the new FBP.
 	void OffsetDraw(s32 fbp_offset, s32 zbp_offset, s32 xoffset, s32 yoffset);
 

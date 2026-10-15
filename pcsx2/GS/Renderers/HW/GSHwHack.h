@@ -22,9 +22,7 @@ public:
 	static bool GSC_Manhunt2(GSRendererHW& r, int& skip);
 	static bool GSC_SacredBlaze(GSRendererHW& r, int& skip);
 	static bool GSC_SandGrainGames(GSRendererHW& r, int& skip);
-	static bool GSC_SFEX3(GSRendererHW& r, int& skip);
 	static bool GSC_DTGames(GSRendererHW& r, int& skip);
-	static bool GSC_Tekken5(GSRendererHW& r, int& skip);
 	static bool GSC_BurnoutGames(GSRendererHW& r, int& skip);
 	static bool GSC_BlackAndBurnoutSky(GSRendererHW& r, int& skip);
 	static bool GSC_MidnightClub3(GSRendererHW& r, int& skip);
@@ -36,7 +34,6 @@ public:
 	static bool GSC_BlueTongueGames(GSRendererHW& r, int& skip);
 	static bool GSC_Battlefield2(GSRendererHW& r, int& skip);
 	static bool GSC_NFSUndercover(GSRendererHW& r, int& skip);
-	static bool GSC_PolyphonyDigitalGames(GSRendererHW& r, int& skip);
 	static bool GSC_MetalGearSolid3(GSRendererHW& r, int& skip);
 	static bool GSC_BigMuthaTruckers(GSRendererHW& r, int& skip);
 
@@ -47,10 +44,8 @@ public:
 	static bool OI_ArTonelico2(GSRendererHW& r, GSTexture* rt, GSTexture* ds, GSTextureCache::Source* t);
 	static bool OI_BurnoutGames(GSRendererHW& r, GSTexture* rt, GSTexture* ds, GSTextureCache::Source* t);
 	static bool OI_Battlefield2(GSRendererHW& r, GSTexture* rt, GSTexture* ds, GSTextureCache::Source* t);
-	static bool OI_HauntingGround(GSRendererHW& r, GSTexture* rt, GSTexture* ds, GSTextureCache::Source* t);
 
 	static bool MV_Growlanser(GSRendererHW& r);
-	static bool MV_Ico(GSRendererHW& r);
 
 	template <typename F>
 	struct Entry

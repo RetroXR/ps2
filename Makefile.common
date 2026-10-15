@@ -41,7 +41,6 @@ ifeq ($(HAVE_VULKAN), 1)
 		-I$(DEPS_DIR)/glslang/glslang \
 		-I$(DEPS_DIR)/glslang/include \
 		-I$(GRANITE_DIR)/util \
-		-I$(GRANITE_DIR)/math \
 		-I$(GRANITE_DIR)/vulkan \
 		-I$(GRANITE_DIR)/application/global \
 		-I$(GRANITE_DIR)/third_party/volk \
@@ -102,7 +101,15 @@ CXXFLAGS += $(FLAGS)
 # ============================================================================
 SOURCES_C += \
 	$(LRPS2_DIR)/GS/Renderers/HW/GSObjectPool.c \
+	$(LRPS2_DIR)/GS/Renderers/SW/GSHiresMem.c \
 	$(LRPS2_DIR)/GS/Renderers/HW/GSHashTable.c \
+	$(LRPS2_DIR)/GS/Renderers/HW/GSSpriteSnap.c \
+	$(LRPS2_DIR)/GS/Renderers/HW/GSTargetBudget.c \
+	$(LRPS2_DIR)/GS/Renderers/Common/GSStableGroup.c \
+	$(LRPS2_DIR)/GS/Renderers/Common/GSRetireRing.c \
+	$(LRPS2_DIR)/USB/libretro-usb/ohci_dma.c \
+	$(LRPS2_DIR)/memcard_ecc.c \
+	$(LRPS2_DIR)/GS/Renderers/HW/GSScratch.c \
 	$(LRPS2_DIR)/GS/Renderers/Vulkan/GSVulkanHeap.c \
 	$(LRPS2_DIR)/GS/Renderers/DX12/GSD3D12Heap.c \
 	$(LIBRETRO_COMM_DIR)/compat/compat_posix_string.c \
@@ -145,6 +152,9 @@ endif
 # ============================================================================
 # libretro core entry points (C++)
 # ============================================================================
+SOURCES_C += \
+	$(LIBRETRO_DIR)/audio_queue.c \
+	$(LIBRETRO_DIR)/state_ext.c
 SOURCES_CXX += \
 	$(LIBRETRO_DIR)/main.cpp \
 	$(LIBRETRO_DIR)/patches.cpp \
@@ -201,7 +211,12 @@ SOURCES_C += \
 	$(LRPS2_DIR)/DEV9/ATA/Commands/ATA_SCE.c
 
 SOURCES_C += \
-	$(LRPS2_DIR)/ps2float.c
+	$(LRPS2_DIR)/ps2float.c \
+	$(LRPS2_DIR)/IopGte.c \
+	$(LRPS2_DIR)/COP2.c \
+	$(LRPS2_DIR)/Sif.c \
+	$(LRPS2_DIR)/SaveStateBase.c \
+	$(LRPS2_DIR)/SaveStateFreeze.c
 
 ifeq ($(HAVE_PCAP), 1)
 SOURCES_CXX += $(LRPS2_DIR)/DEV9/pcap_io.cpp
@@ -242,7 +257,6 @@ SOURCES_CXX += \
 	$(LRPS2_DIR)/StringView.cpp \
 	$(LRPS2_DIR)/Cache.cpp \
 	$(LRPS2_DIR)/COP0.cpp \
-	$(LRPS2_DIR)/COP2.cpp \
 	$(LRPS2_DIR)/Counters.cpp \
 	$(LRPS2_DIR)/Dmac.cpp \
 	$(LRPS2_DIR)/Elfheader.cpp \
@@ -259,7 +273,6 @@ SOURCES_CXX += \
 	$(LRPS2_DIR)/IopBios.cpp \
 	$(LRPS2_DIR)/IopCounters.cpp \
 	$(LRPS2_DIR)/IopDma.cpp \
-	$(LRPS2_DIR)/IopGte.cpp \
 	$(LRPS2_DIR)/IopHw.cpp \
 	$(LRPS2_DIR)/IopIrq.cpp \
 	$(LRPS2_DIR)/IopMem.cpp \
@@ -280,8 +293,6 @@ SOURCES_CXX += \
 	$(LRPS2_DIR)/R5900.cpp \
 	$(LRPS2_DIR)/R5900OpcodeImpl.cpp \
 	$(LRPS2_DIR)/R5900OpcodeTables.cpp \
-	$(LRPS2_DIR)/SaveState.cpp \
-	$(LRPS2_DIR)/Sif.cpp \
 	$(LRPS2_DIR)/Sif0.cpp \
 	$(LRPS2_DIR)/Sif1.cpp \
 	$(LRPS2_DIR)/sif2.cpp \
@@ -325,14 +336,18 @@ SOURCES_CXX += \
 # pcsx2/Frontend
 SOURCES_CXX += \
 
-# pcsx2/IPU
+# pcsx2/IPU. The leaf kernels build as C; the decoder stays C++.
+SOURCES_C += \
+	$(LRPS2_DIR)/IPU/IPUdither.c \
+	$(LRPS2_DIR)/IPU/ipu_csc.c \
+	$(LRPS2_DIR)/IPU/ipu_idct.c \
+	$(LRPS2_DIR)/IPU/yuv2rgb.c
+
 SOURCES_CXX += \
 	$(LRPS2_DIR)/IPU/IPU.cpp \
 	$(LRPS2_DIR)/IPU/IPU_Fifo.cpp \
 	$(LRPS2_DIR)/IPU/IPU_MultiISA.cpp \
-	$(LRPS2_DIR)/IPU/IPUdither.cpp \
-	$(LRPS2_DIR)/IPU/IPUdma.cpp \
-	$(LRPS2_DIR)/IPU/yuv2rgb.cpp
+	$(LRPS2_DIR)/IPU/IPUdma.cpp
 
 # pcsx2/PAD
 SOURCES_CXX += $(LRPS2_DIR)/PAD/PAD.cpp
@@ -359,18 +374,20 @@ SOURCES_CXX += \
 	$(LRPS2_DIR)/ps2/Iop/IopHwWrite.cpp \
 	$(LRPS2_DIR)/ps2/Iop/PsxBios.cpp
 
-# pcsx2/SPU2
+# pcsx2/SPU2. Every unit builds as C, the emulator-facing shim included.
+SOURCES_C += \
+	$(LRPS2_DIR)/SPU2/ADSR.c \
+	$(LRPS2_DIR)/SPU2/Dma.c \
+	$(LRPS2_DIR)/SPU2/Mixer.c \
+	$(LRPS2_DIR)/SPU2/ReadInput.c \
+	$(LRPS2_DIR)/SPU2/RegTable.c \
+	$(LRPS2_DIR)/SPU2/Reverb.c \
+	$(LRPS2_DIR)/SPU2/ReverbResample.c \
+	$(LRPS2_DIR)/SPU2/spu2.c \
+	$(LRPS2_DIR)/SPU2/spu2freeze.c \
+	$(LRPS2_DIR)/SPU2/spu2sys.c
+
 SOURCES_CXX += \
-	$(LRPS2_DIR)/SPU2/ADSR.cpp \
-	$(LRPS2_DIR)/SPU2/Dma.cpp \
-	$(LRPS2_DIR)/SPU2/Mixer.cpp \
-	$(LRPS2_DIR)/SPU2/ReadInput.cpp \
-	$(LRPS2_DIR)/SPU2/RegTable.cpp \
-	$(LRPS2_DIR)/SPU2/Reverb.cpp \
-	$(LRPS2_DIR)/SPU2/ReverbResample.cpp \
-	$(LRPS2_DIR)/SPU2/spu2.cpp \
-	$(LRPS2_DIR)/SPU2/spu2freeze.cpp \
-	$(LRPS2_DIR)/SPU2/spu2sys.cpp
 
 # pcsx2 CPU recompilers. x86_64 uses the x86 dynarec; aarch64 uses the native
 # arm64 EE/IOP/VU recompilers + NEON VIF unpack transplanted from ARMSX2 (the
@@ -535,13 +552,10 @@ SOURCES_CXX += \
 	$(PGS_DIR)/gs/gs_util.cpp \
 	$(PGS_DIR)/gs/page_tracker.cpp
 
-# Granite math
-# aabb, frustum, interpolation, math, transforms are excluded: nm on the build
-# shows none of their defined symbols are referenced by anything we link in
-# (paraLLEl-GS does not use Granite's scene-graph / culling / colour helpers).
-# muglm is the only actually-used math TU.
-SOURCES_CXX += \
-	$(GRANITE_DIR)/math/muglm/muglm.cpp
+# Granite math is gone entirely: nothing in paraLLEl-GS or the Granite subset
+# this core links uses it. The vector types the GS code needs are plain
+# aggregates in shaders/data_structures.h, and anything arithmetic on a pair
+# goes through gs/pgs_vertex_kernels.h.
 
 # Granite util
 # cli_parser, dynamic_library, message_queue are excluded: their consumers

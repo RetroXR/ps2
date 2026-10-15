@@ -2,15 +2,20 @@
 // SPDX-License-Identifier: LGPL-3.0+
 
 #include "GSRendererPGS.h"
+
+#include <string.h>
+#include "thread_id.hpp"
 #include "common/Pcsx2Defs.h"
 #include "GS/GSState.h"
 #include "GS.h"
-#include "math.hpp"
-#include "muglm/muglm_impl.hpp"
 #include "PerformanceMetrics.h"
+#ifdef ENABLE_PCSX2_PROFILER
+#include "Profiler.h"
+#else
+#define PROFILE_SCOPE(z) do {} while (0)
+#endif
 #include "logging.hpp"
 #include <stdarg.h>
-#include <vector>
 
 using namespace Vulkan;
 using namespace ParallelGS;
@@ -18,6 +23,8 @@ using namespace Granite;
 
 static retro_hw_render_interface_vulkan *hw_render_iface;
 static std::unique_ptr<Vulkan::Context> vulkan_ctx;
+
+#define PGS_THREAD_INDEX_COUNT 4
 
 /* The images handed to the frontend, one per frontend sync index.
  *
@@ -36,13 +43,18 @@ static std::unique_ptr<Vulkan::Context> vulkan_ctx;
 static std::vector<ImageHandle> vsync_images;
 /* The retro_vulkan_image the frontend was pointed at, per slot: the
  * frontend keeps the pointer (a cached-frame replay dereferences it
- * again), so it must stay valid as long as the slot's image does. */
-static std::vector<retro_vulkan_image> vsync_descs;
+ * again), so it must stay valid as long as the slot's image does. One
+ * per bit of the sync index mask, never moved. */
+static retro_vulkan_image vsync_descs[32];
+/* Images the frontend has finished with, offered back to the renderer
+ * for the next frame's scanout instead of a fresh one each frame. */
+static std::vector<ImageHandle> spare_vsync_images;
 
 static void pgs_release_vsync_images()
 {
 	vsync_images.clear();
-	vsync_descs.clear();
+	memset(vsync_descs, 0, sizeof(vsync_descs));
+	spare_vsync_images.clear();
 }
 extern retro_environment_t environ_cb;
 extern retro_video_refresh_t video_cb;
@@ -54,8 +66,18 @@ struct LibretroLog final : Util::LoggingInterface
 		if (!log_cb)
 			return false;
 
-		char buf[4 * 1024];
-		vsnprintf(buf, sizeof(buf), fmt, va);
+		/* Logs from any of Granite's threads: short lines on the stack,
+		 * longer ones on the heap. */
+		char small[512];
+		char* buf = small;
+		va_list again;
+		va_copy(again, va);
+		const int len = vsnprintf(small, sizeof(small), fmt, va);
+		if (len >= (int)sizeof(small) && (buf = (char*)malloc((size_t)len + 1)) != nullptr)
+			vsnprintf(buf, (size_t)len + 1, fmt, again);
+		else if (!buf)
+			buf = small;
+		va_end(again);
 
 		retro_log_level level = RETRO_LOG_DUMMY;
 		if (strcmp(tag, "[ERROR]: ") == 0)
@@ -66,6 +88,8 @@ struct LibretroLog final : Util::LoggingInterface
 			level = RETRO_LOG_WARN;
 
 		log_cb(level, "%s", buf);
+		if (buf != small)
+			free(buf);
 		return true;
 	}
 };
@@ -123,7 +147,14 @@ VkInstance pgs_create_instance(PFN_vkGetInstanceProcAddr get_instance_proc_addr,
 	vulkan_ctx = std::make_unique<Context>();
 	Context::SystemHandles handles = {};
 	vulkan_ctx->set_system_handles(handles);
-	vulkan_ctx->set_num_thread_indices(1);
+	/* One command pool per recording thread per frame: the GS thread
+	 * (index 0, registered by Device::set_context) and whichever other
+	 * thread records - the EE/VM thread on a readback, say. The pools
+	 * are small, and a thread past this count would share pool 0 with
+	 * the GS thread, which Vulkan forbids. Compile threads register 0
+	 * themselves and never record. */
+	vulkan_ctx->set_num_thread_indices(PGS_THREAD_INDEX_COUNT);
+	Util::set_thread_index_count(PGS_THREAD_INDEX_COUNT);
 	vulkan_ctx->set_application_info(app);
 
 	struct Factory final : Vulkan::InstanceFactory
@@ -170,85 +201,19 @@ bool pgs_create_device2(
 	if (Vulkan::Context::get_instance_proc_addr() != get_instance_proc_addr)
 		return false;
 
-	/* The frontend presents on its own queue when the graphics family
-	 * has one to spare: its vkQueuePresentKHR then holds no lock, and
-	 * this core's submissions - which go through the frontend's
-	 * lock_queue - are never held behind a present that is waiting on
-	 * the display (the exclusive-fullscreen path on NVIDIA waits inside
-	 * the call). Granite creates exactly the queues it uses, so the
-	 * device is created with one more in the graphics family than
-	 * Granite asked for, where the family offers it; Granite never sees
-	 * that queue, and the frontend gets it as presentation_queue. */
 	struct Factory final : Vulkan::DeviceFactory
 	{
 		VkDevice create_device(VkPhysicalDevice gpu, const VkDeviceCreateInfo *info) override
 		{
-			VkDeviceCreateInfo patched = *info;
-			std::vector<VkDeviceQueueCreateInfo> queues(
-				info->pQueueCreateInfos, info->pQueueCreateInfos + info->queueCreateInfoCount);
-			std::vector<float> priorities;
-
-			extra_present_queue = false;
-			if (family_queue_count)
-			{
-				for (auto &q : queues)
-				{
-					if (q.queueFamilyIndex != graphics_family || q.queueCount + 1 > family_queue_count)
-						continue;
-					priorities.assign(q.pQueuePriorities, q.pQueuePriorities + q.queueCount);
-					priorities.push_back(0.5f);
-					q.queueCount++;
-					q.pQueuePriorities = priorities.data();
-					extra_present_queue = true;
-					break;
-				}
-			}
-			patched.pQueueCreateInfos = queues.data();
-			patched.queueCreateInfoCount = uint32_t(queues.size());
-			return wrapper(gpu, opaque, &patched);
+			return wrapper(gpu, opaque, info);
 		}
 
 		retro_vulkan_create_device_wrapper_t wrapper = nullptr;
 		void *opaque = nullptr;
-		uint32_t graphics_family = VK_QUEUE_FAMILY_IGNORED;
-		uint32_t family_queue_count = 0;
-		bool extra_present_queue = false;
 	} factory;
 
 	factory.wrapper = create_device_wrapper;
 	factory.opaque = opaque;
-
-	/* Which family Granite will pick is its choice; the extra queue is
-	 * only requested for the graphics family, and only when the family
-	 * has more queues than the create info asks for. The properties
-	 * are read here, before init_device, through the instance. */
-	{
-		auto gipa = Vulkan::Context::get_instance_proc_addr();
-		auto get_props = reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
-			gipa(instance, "vkGetPhysicalDeviceQueueFamilyProperties"));
-		auto get_present = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceSupportKHR>(
-			gipa(instance, "vkGetPhysicalDeviceSurfaceSupportKHR"));
-		if (get_props)
-		{
-			uint32_t count = 0;
-			get_props(gpu, &count, nullptr);
-			std::vector<VkQueueFamilyProperties> props(count);
-			get_props(gpu, &count, props.data());
-			for (uint32_t i = 0; i < count; i++)
-			{
-				VkBool32 present = surface == VK_NULL_HANDLE;
-				if (!present && get_present)
-					get_present(gpu, i, surface, &present);
-				if ((props[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ==
-				        (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT) && present)
-				{
-					factory.graphics_family = i;
-					factory.family_queue_count = props[i].queueCount;
-					break;
-				}
-			}
-		}
-	}
 	vulkan_ctx->set_device_factory(&factory);
 
 	if (!vulkan_ctx->init_device(gpu, surface, nullptr, 0, Vulkan::CONTEXT_CREATION_ENABLE_PUSH_DESCRIPTOR_BIT))
@@ -257,24 +222,10 @@ bool pgs_create_device2(
 	vulkan_ctx->release_device();
 	context->gpu = vulkan_ctx->get_gpu();
 	context->device = vulkan_ctx->get_device();
+	context->presentation_queue = vulkan_ctx->get_queue_info().queues[Vulkan::QUEUE_INDEX_GRAPHICS];
+	context->presentation_queue_family_index = vulkan_ctx->get_queue_info().family_indices[Vulkan::QUEUE_INDEX_GRAPHICS];
 	context->queue = vulkan_ctx->get_queue_info().queues[Vulkan::QUEUE_INDEX_GRAPHICS];
 	context->queue_family_index = vulkan_ctx->get_queue_info().family_indices[Vulkan::QUEUE_INDEX_GRAPHICS];
-	context->presentation_queue = context->queue;
-	context->presentation_queue_family_index = context->queue_family_index;
-
-	/* The extra queue sits right after the ones Granite took in that
-	 * family: counts[] is how many it created there. Only when Granite
-	 * chose the family the extra queue was added to. */
-	if (factory.extra_present_queue &&
-	    factory.graphics_family == vulkan_ctx->get_queue_info().family_indices[Vulkan::QUEUE_INDEX_GRAPHICS])
-	{
-		VkQueue present_queue = VK_NULL_HANDLE;
-		vulkan_ctx->get_device_table().vkGetDeviceQueue(
-			context->device, factory.graphics_family,
-			vulkan_ctx->get_queue_info().counts[Vulkan::QUEUE_INDEX_GRAPHICS], &present_queue);
-		if (present_queue != VK_NULL_HANDLE)
-			context->presentation_queue = present_queue;
-	}
 	return true;
 }
 
@@ -303,15 +254,17 @@ static ParsedSuperSampling parse_super_sampling_options(u8 super_sampling)
 {
 	ParsedSuperSampling parsed = {};
 
-	if (super_sampling > 6)
-		super_sampling = 6;
+	if (super_sampling > 7)
+		super_sampling = 7;
 
 	// Setting 6 is the ordered 16x grid: the only layout that resolves
 	// two position bits per axis, which the 4x high-res scanout needs.
-	if (super_sampling == 6)
+	// Setting 7 is the ordered 4x8 grid, with a third row bit for the
+	// full-field-height scanout of field-rendered games.
+	if (super_sampling >= 6)
 	{
 		parsed.ordered = true;
-		parsed.super_sampling = SuperSampling::X16;
+		parsed.super_sampling = super_sampling == 7 ? SuperSampling::X32 : SuperSampling::X16;
 		return parsed;
 	}
 
@@ -575,11 +528,11 @@ int GSRendererPGS::Defrost(freezeData* data)
 	read_data(ptr, vram, GSLocalMemory::m_vmsize);
 	iface.end_vram_write(0, GSLocalMemory::m_vmsize);
 
-	// 4 GIF paths
+	// 4 GIF paths: the tag as Freeze wrote it, NLOOP counting what was
+	// left of the packet, so the path resumes with none of it done.
 	for (int i = 0; i < 4; i++)
 	{
-		auto gif_path = iface.get_gif_path(i);
-		gif_path.tag.NLOOP -= gif_path.loop;
+		auto &gif_path = iface.get_gif_path(i);
 		read_data(ptr, &gif_path.tag, sizeof(gif_path.tag));
 		gif_path.loop = 0;
 		read_reg(ptr, gif_path.reg);
@@ -617,37 +570,27 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
 	// The scaling blur is technically a blur ...
 	info.adapt_to_internal_horizontal_resolution = GSConfig.PCRTCAntiBlur;
 	info.raw_circuit_scanout                     = true;
+	info.recycle                                 = &spare_vsync_images;
 	// Config values: 0 = off, 1 = 2x, 2 = 4x point-sampled,
-	// 3 = 4x with the tent reconstruction filter.
-	info.high_resolution_scanout                 = GSConfig.PGSHighResScanout == 3 ? 2 : GSConfig.PGSHighResScanout;
-	info.high_res_scanout_filtered               = GSConfig.PGSHighResScanout == 3;
+	// 3 = 4x with the tent reconstruction filter, 4 = 4x with a
+	// field-rendered game at its full field height, 5 = both.
+	info.high_resolution_scanout                 = GSConfig.PGSHighResScanout >= 3 ? 2 : GSConfig.PGSHighResScanout;
+	info.high_res_scanout_filtered               = GSConfig.PGSHighResScanout == 3 || GSConfig.PGSHighResScanout == 5;
+	info.high_res_scanout_full_field             = GSConfig.PGSHighResScanout >= 4;
 	auto vsync                                   = iface.vsync(info);
-
-	auto stats = iface.consume_flush_stats();
-	if (GSConfig.SkipDuplicateFrames && has_presented_in_current_swapchain &&
-	    !registers_written && stats.num_render_passes == 0 && stats.num_copies == 0)
-	{
-		video_cb(nullptr, 0, 0, 0);
-		return;
-	}
-
-	if (vsync.image)
-	{
-		last_internal_width = vsync.internal_width;
-		last_internal_height = vsync.internal_height;
-	}
 
 	if (hw_render_iface)
 	{
 		if (vsync.image)
 		{
-			static retro_game_geometry geom  = {};
 			bool geom_changed                = false;
-			static float last_aspect         = 0.0f;
-			static uint32_t last_base_width  = 0;
-			static uint32_t last_base_height = 0;
 			uint32_t new_base_width          = vsync.image->get_width();
 			uint32_t new_base_height         = vsync.image->get_height();
+			/* What follows is the frontend's: its slot, the wait on it,
+			 * set_image and the video callback, which on a threaded
+			 * video path holds until a slot frees. Its own zone, so
+			 * the vsync zone is the render. */
+			PROFILE_SCOPE(ZONE_GS_HANDOVER);
 			/* The frontend's slot for this frame, and the wait that
 			 * says it is done with what the slot held before. Its
 			 * mask is a contiguous run of bits: the ring is sized to
@@ -669,10 +612,7 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
 			if (sync_index >= sync_slots)
 				sync_index = 0;
 			if (vsync_images.size() < sync_slots)
-			{
 				vsync_images.resize(sync_slots);
-				vsync_descs.resize(sync_slots);
-			}
 			hw_render_iface->wait_sync_index(hw_render_iface->handle);
 
 			dev.flush_frame();
@@ -728,19 +668,30 @@ void GSRendererPGS::VSync(u32 field, bool registers_written)
 
 			hw_render_iface->set_image(hw_render_iface->handle, &vkimage, 0, nullptr, hw_render_iface->queue_index);
 			video_cb(RETRO_HW_FRAME_BUFFER_VALID, new_base_width, new_base_height, 0);
-			/* The image this slot held is let go here, after the wait
-			 * above said the frontend is done with it; the one just
+			/* The image this slot held is offered back here, after the
+			 * wait above said the frontend is done with it; the one just
 			 * handed over stays until this slot comes round again. */
+			if (vsync_images[sync_index])
+			{
+				/* One per slot is enough; past that the list is only
+				 * holding sizes the mode has moved away from. */
+				if (spare_vsync_images.size() > sync_slots)
+					spare_vsync_images.erase(spare_vsync_images.begin());
+				spare_vsync_images.push_back(std::move(vsync_images[sync_index]));
+			}
 			vsync_images[sync_index] = vsync.image;
 			last_base_width  = new_base_width;
 			last_base_height = new_base_height;
 			last_aspect      = geom.aspect_ratio;
 		}
 		else
+		{
+			PROFILE_SCOPE(ZONE_GS_HANDOVER);
 			video_cb(nullptr, 0, 0, 0);
+		}
 	}
-
-	dev.next_frame_context();
+	/* vsync() ended with a flush that already moved the device to its
+	 * next frame context; nothing was submitted since. */
 }
 
 void GSRendererPGS::Transfer(const u8* mem, u32 size)
@@ -752,12 +703,6 @@ void GSRendererPGS::Transfer(const u8* mem, u32 size)
 void GSRendererPGS::ReadFIFO(u8 *mem, u32 size)
 {
 	iface.read_transfer_fifo(mem, size);
-}
-
-void GSRendererPGS::GetInternalResolution(int *width, int *height)
-{
-	*width = int(last_internal_width);
-	*height = int(last_internal_height);
 }
 
 /* --- the table GS.cpp calls through (see gs_renderer_ops in GS.h) -------
@@ -776,9 +721,9 @@ static u8*  pgs_op_regs_mem(void)                        { return g_pgs_renderer
 
 static int pgs_op_freeze(int mode, freezeData* data)
 {
-	if (mode == static_cast<int>(FreezeAction::Save))
+	if (mode == static_cast<int>(FREEZE_SAVE))
 		return g_pgs_renderer->Freeze(data, false);
-	if (mode == static_cast<int>(FreezeAction::Size))
+	if (mode == static_cast<int>(FREEZE_SIZE))
 		return g_pgs_renderer->Freeze(data, true);
 	return g_pgs_renderer->Defrost(data);
 }
@@ -786,7 +731,6 @@ static int pgs_op_freeze(int mode, freezeData* data)
 const struct gs_renderer_ops pgs_renderer_ops = {
 	pgs_op_reset,
 	NULL, /* gif_soft_reset */
-	NULL, /* write_csr */
 	pgs_op_read_fifo,
 	NULL, /* read_local_memory_unsync */
 	pgs_op_transfer,

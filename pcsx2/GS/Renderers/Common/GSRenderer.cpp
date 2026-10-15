@@ -23,6 +23,11 @@
 #include "../../../Host.h"
 #include "../../../PerformanceMetrics.h"
 #include "../../../Config.h"
+#ifdef ENABLE_PCSX2_PROFILER
+#include "../../../Profiler.h"
+#else
+#define PROFILE_SCOPE(z) do {} while (0)
+#endif
 
 extern retro_video_refresh_t video_cb;
 
@@ -157,9 +162,9 @@ bool GSState::Merge(int field)
 		// src_gs_read is the size which we're really reading from GS memory.
 		src_gs_read[i] = ((GSVector4(curCircuit.framebufferRect) + GSVector4(0, y_offset[i], 0, y_offset[i])) * scale) / GSVector4(tex[i]->GetSize()).xyxy();
 		
+		/* A half-height field is not offset here for the weave: the
+		 * interlace takes each line's rows from the field that drew it. */
 		float interlace_offset = 0.0f;
-		if (isReallyInterlaced() && m_regs->SMODE2.FFMD && !is_bob && !GSConfig.DisableInterlaceOffset && GSConfig.InterlaceMode != GSInterlaceMode::Off)
-			interlace_offset = (scale.y) * static_cast<float>(field ^ field2);
 		// Scanmask frame offsets. It's gross, I'm sorry but it sucks.
 		if (m_scanmask_used)
 		{
@@ -182,10 +187,25 @@ bool GSState::Merge(int field)
 		GSVector4 scale = GSVector4(tex_scale[2]);
 		GSVector4i feedback_rect;
 
+		// FBIN selects which of the two displays feeds the write-back, but
+		// it is a 2-bit field and DISP has two entries, so the two spare
+		// values index past the end and read the registers that follow as
+		// if they were a DISPLAY. GSRendererHW::GetFeedbackOutput masks it;
+		// these two did not.
+		const GSRegDISPLAY& feedback_disp = m_regs->DISP[m_regs->EXTBUF.FBIN & 1].DISPLAY;
+
+		// SMPH/SMPV and MAGH/MAGV are 4- and 2-bit fields, so they promote
+		// to int and the subtraction is signed: a game writing a
+		// magnification above the sampling rate makes the ratio -1 and the
+		// divisor zero. The ratio is a downsample factor and is never less
+		// than one on hardware.
+		const int downsample_h = pcsx2_max_i(1, (int)(m_regs->EXTDATA.SMPH - feedback_disp.MAGH) + 1);
+		const int downsample_v = pcsx2_max_i(1, (int)(m_regs->EXTDATA.SMPV - feedback_disp.MAGV) + 1);
+
 		feedback_rect.left = m_regs->EXTBUF.WDX;
-		feedback_rect.right = feedback_rect.left + ((m_regs->EXTDATA.WW + 1) / ((m_regs->EXTDATA.SMPH - m_regs->DISP[m_regs->EXTBUF.FBIN].DISPLAY.MAGH) + 1));
+		feedback_rect.right = feedback_rect.left + ((m_regs->EXTDATA.WW + 1) / downsample_h);
 		feedback_rect.top = m_regs->EXTBUF.WDY;
-		feedback_rect.bottom = ((m_regs->EXTDATA.WH + 1) * (2 - m_regs->EXTBUF.WFFMD)) / ((m_regs->EXTDATA.SMPV - m_regs->DISP[m_regs->EXTBUF.FBIN].DISPLAY.MAGV) + 1);
+		feedback_rect.bottom = ((m_regs->EXTDATA.WH + 1) * (2 - m_regs->EXTBUF.WFFMD)) / downsample_v;
 
 		dst[2] = GSVector4(scale * GSVector4(feedback_rect.rsize()));
 	}
@@ -212,46 +232,13 @@ bool GSState::Merge(int field)
 	{
 		const float offset = is_bob ? (tex[1] ? tex_scale[1] : tex_scale[0]) : 0.0f;
 
-		g_gs_device->Interlace(fs, field ^ field2, mode, offset);
+		g_gs_device->Interlace(fs, field ^ field2, mode, offset, static_cast<float>(fs.y) / static_cast<float>(resolution.y), m_regs->SMODE2.FFMD != 0);
 	}
 
 	if (m_scanmask_used)
 		m_scanmask_used--;
 
 	return true;
-}
-
-float GSState::GetModXYOffset()
-{
-	// Scaled Bilinear HPO depending on the gradient.
-	if (GSConfig.UserHacks_HalfPixelOffset == 4)
-	{
-		const GSVector2 pos_range(m_vt.m_max.p.x - m_vt.m_min.p.x, m_vt.m_max.p.y - m_vt.m_min.p.y);
-		const GSVector2 uv_range(m_vt.m_max.t.x - m_vt.m_min.t.x, m_vt.m_max.t.y - m_vt.m_min.t.y);
-		const GSVector2 grad(uv_range / pos_range);
-		const float avg_grad = (grad.x + grad.y) / 2;
-
-		if (avg_grad >= 0.5f && m_draw_env->CTXT[m_draw_env->PRIM.CTXT].TEX1.MMIN == 1)
-		{
-			float mod_xy = GetUpscaleMultiplier();
-			return mod_xy += (mod_xy / 2.0f) * avg_grad;
-		}
-	}
-	else if (GSConfig.UserHacks_HalfPixelOffset == GSHalfPixelOffset::Normal)
-	{
-		float mod_xy = GetUpscaleMultiplier();
-		const int rounded_mod_xy = static_cast<int>(std::round(mod_xy));
-		if (rounded_mod_xy > 1)
-		{
-			if (!(rounded_mod_xy & 1))
-				return mod_xy += 0.2f;
-			else if (!(rounded_mod_xy & 2))
-				return mod_xy += 0.3f;
-			return mod_xy += 0.1f;
-		}
-	}
-
-	return 0.0f;
 }
 
 bool GSState::BeginPresentFrame(bool frame_skip)
@@ -330,7 +317,10 @@ void GSState::VSyncBase(u32 field, bool registers_written, bool idle_frame)
 				g_gs_device->PresentRect(current, src_uv, nullptr, draw_rect);
 			}
 			else
+			{
+				PROFILE_SCOPE(ZONE_GS_HANDOVER);
 				video_cb(NULL, 0, 0, 0);
+			}
 
 			g_gs_device->EndPresent();
 		}

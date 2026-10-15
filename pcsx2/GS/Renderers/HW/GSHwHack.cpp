@@ -180,27 +180,6 @@ bool GSHwHack::GSC_SacredBlaze(GSRendererHW& r, int& skip)
 	return true;
 }
 
-bool GSHwHack::GSC_SFEX3(GSRendererHW& r, int& skip)
-{
-	if (skip == 0)
-	{
-		if (RTME && RFBP == 0x00500 && RFPSM == PSMCT16 && RTBP0 == 0x00f00 && RTPSM == PSMCT16)
-		{
-			// This draw copies/downscales the RT, but does so in a weird way, by copying it in two halves,
-			// downscaling from 640x224 to 320x112, but splitting it in to 320x64 and 320x48 next to each other.
-			// It then halves the page width on the next draw so they appear one above the other, which is what our TC doesn't support.
-			// This modified that weird halving draw to just draw it as one 320x112 chunk, it then works correctly.
-			// Skipping is no good as the copy is used again later, and it causes a weird shimmer/echo effect every other frame.
-			r.m_vertex.buff[1].XYZ.Y += r.m_vertex.buff[r.m_vertex.tail - 1].XYZ.Y - r.m_context->XYOFFSET.OFY;;
-			r.m_vertex.buff[1].V = r.m_vertex.buff[r.m_vertex.tail - 1].V;
-			r.m_vertex.tail = 2;
-			r.m_index.tail = 2;
-		}
-	}
-
-	return true;
-}
-
 bool GSHwHack::GSC_DTGames(GSRendererHW& r, int& skip)
 {
 	if (skip == 0)
@@ -250,69 +229,6 @@ bool GSHwHack::GSC_DTGames(GSRendererHW& r, int& skip)
 	{
 		if (RTPSM != PSMCT16)
 			skip = 0;
-	}
-
-	return true;
-}
-
-bool GSHwHack::GSC_Tekken5(GSRendererHW& r, int& skip)
-{
-	if (skip == 0)
-	{
-		if (r.IsPossibleChannelShuffle())
-		{
-			GSVertex* v = &r.m_vertex.buff[0];
-
-			// Make sure we're detecting the right effect.
-			if (((v[1].XYZ.X - v[0].XYZ.X) >> 4) != 8 || ((v[1].XYZ.Y - v[0].XYZ.Y) >> 4) != 14)
-				return false;
-
-			GSTextureCache::Target* rt = g_texture_cache->LookupTarget(GIFRegTEX0::Create(RTBP0, RFBW, RFPSM),
-				GSVector2i(1, 1), r.GetTextureScaleFactor(), GSTextureCache::RenderTarget);
-			if (!rt)
-				return false;
-
-			// have to set up the palette ourselves too, since GSC executes before it does
-			r.m_mem.m_clut.Read32(RTEX0, r.m_draw_env->TEXA);
-			GSTexture* palette =
-				g_texture_cache->LookupPaletteObject(r.m_mem.m_clut, GSLocalMemory::m_psm[RTEX0.PSM].pal, true);
-			if (!palette)
-				return false;
-
-			GSHWDrawConfig& conf = r.BeginHLEHardwareDraw(
-				rt->GetTexture(), nullptr, rt->GetScale(), rt->GetTexture(), rt->GetScale(), rt->GetUnscaledRect());
-			conf.pal = palette;
-			conf.ps.channel = ChannelFetch_RGB;
-			conf.colormask.wa = false;
-			r.EndHLEHardwareDraw(false);
-
-			// 12 pages: 2 calls by channel, 3 channels, 1 blit
-			skip = 12 * (3 + 3 + 1);
-			return true;
-		}
-
-		if (!s_nativeres && r.PRIM->PRIM == GS_SPRITE && RTME && RTEX0.TFX == 1 && RFPSM == RTPSM && RTPSM == PSMCT32 && RFBMSK == 0xFF000000 && r.m_index.tail > 2)
-		{
-			// Don't enable hack on native res.
-			// Fixes ghosting/blur effect and white lines appearing in stages: Moonfit Wilderness, Acid Rain - caused by upscaling.
-			// Game copies the framebuffer as individual page rects with slight offsets (like 1/16 of a pixel etc) which doesn't wokr well with upscaling.
-			// This should catch all the scenarios, maybe overdoes it, but it's for 1 game and it's non-detrimental, it's better than squares all over the screen.
-			const GSVector4i draw_size(r.m_vt.m_min.p.x, r.m_vt.m_min.p.y, r.m_vt.m_max.p.x + 1.0f, r.m_vt.m_max.p.y + 1.0f);
-			const GSVector4i read_size(r.m_vt.m_min.t.x, r.m_vt.m_min.t.y, r.m_vt.m_max.t.x + 0.5f, r.m_vt.m_max.t.y + 0.5f);
-			r.ReplaceVerticesWithSprite(draw_size, read_size, GSVector2i(read_size.width(), read_size.height()), draw_size);
-		}
-		else if (RZTST == 1 && RTME && (RFBP == 0x02bc0 || RFBP == 0x02be0 || RFBP == 0x02d00 || RFBP == 0x03480 || RFBP == 0x034a0) && RFPSM == RTPSM && RTBP0 == 0x00000 && RTPSM == PSMCT32)
-		{
-			// The moving display effect (flames) on the Burning Temple stage is drawn as two
-			// halves whose alignment breaks under upscaling, producing black lines / half-screen
-			// bottom issues. Rather than drop the effect entirely (which removes the flames),
-			// realign the two halves by nudging every other vertex up by half a pixel (0x8 in
-			// 1/16 subpixel units), as upstream does for the same Namco-engine heat haze. This
-			// keeps the effect visible and correct instead of skipping it.
-			GSVertex* v = &r.m_vertex.buff[0];
-			for (u32 i = 0; i < r.m_index.tail; i += 2)
-				v[i].XYZ.Y -= 0x8;
-		}
 	}
 
 	return true;
@@ -602,124 +518,6 @@ bool GSHwHack::GSC_NFSUndercover(GSRendererHW& r, int& skip)
 		return skip > 0;
 
 	return false;
-}
-
-bool GSHwHack::GSC_PolyphonyDigitalGames(GSRendererHW& r, int& skip)
-{
-	// These games appear to grab red and write it to a new page-sized render target, then
-	// grab green and blue, with alpha blending turned on, to accumulate them to the temporary
-	// target, then copy the temporary target back to the main FB. The CLUT is set to an offset
-	// ramp texture, presumably this is for screen brightness.
-
-	// Unfortunately because we're HLE'ing split RGB shuffles into one, and the draws themselves
-	// vary a lot, we can't predetermine a skip number, and because the game changes the CBP,
-	// that's going to break us in the middle off the shuffle... So, just track it ourselves.
-
-	// Need to track the FBMSK as well. The transition at the start of the race does both an RGB
-	// and A shuffle, but obviously changes FBMSK mid-way, so we can restart then.
-
-	static bool shuffle_hle_active = false;
-	static u32 shuffle_fbmsk = 0;
-
-	const bool is_cs = r.IsPossibleChannelShuffle();
-	if (shuffle_hle_active && is_cs)
-	{
-		if (RFBMSK == shuffle_fbmsk)
-		{
-			skip = 1;
-			return true;
-		}
-	}
-	else if (!is_cs)
-	{
-		shuffle_hle_active = false;
-		return false;
-	}
-
-	GSTextureCache::Target* src = g_texture_cache->LookupTarget(RTEX0, GSVector2i(1, 1), r.GetTextureScaleFactor(),
-		GSTextureCache::RenderTarget, true, 0, false, false, true, true, GSVector4i::zero(), true);
-	if (!src)
-		return false;
-
-	// have to set up the palette ourselves too, since GSC executes before it does
-	r.m_mem.m_clut.Read32(RTEX0, r.m_draw_env->TEXA);
-	GSTexture* palette =
-		g_texture_cache->LookupPaletteObject(r.m_mem.m_clut, GSLocalMemory::m_psm[RTEX0.PSM].pal, true);
-	if (!palette)
-		return false;
-
-	// skip this draw, and until the end of the CS, ignoring fbmsk and cbp
-	shuffle_hle_active = true;
-	shuffle_fbmsk = RFBMSK;
-	skip = 1;
-
-	const u32 fbmsk = RFBMSK;
-	if (RFBMSK != 0x00FFFFFFu)
-	{
-		GSHWDrawConfig& config = r.BeginHLEHardwareDraw(
-			src->GetTexture(), nullptr, src->GetScale(), src->GetTexture(), src->GetScale(), src->GetUnscaledRect());
-		config.pal = palette;
-		config.ps.channel = ChannelFetch_RGB;
-		config.colormask.wrgba = 1 | 2 | 4;
-		r.EndHLEHardwareDraw(false);
-
-		return true;
-	}
-	else
-	{
-		// There's a second variant of this shuffle which gets used in the fade on some setups. See issue #10144.
-		// Instead of extracting the RGB channels, then immediately applying the brightness effect, it extracts
-		// each channel to a separate buffer, then applies them a few hundred draws later. So, we can replicate
-		// that in HLE by creating 3 targets, extracting the corresponding channel to each.
-
-		// Can't use the valid of src, because it gets converted from depth at some point..
-		// Drawn isn't correct, because the target might be from earlier, where it had a higher height.
-		// Instead, we use the resolution from the PCRTC, and halve it. Only thing that seems to work,
-		// otherwise we get the incorrect offset texture pointers. In NTSC, that's 0x0, 0xA00, 0x1400.
-
-		// Further complicating things, the Prologue version shuffles into FBP0 from a different TBP0, so we can't
-		// use that as an indicator. Luckily, all the alpha destination shuffles seem to write to FBP0, so we can
-		// get away with just hardcoding it.
-		const GSVector2i resolution = r.PCRTCDisplays.GetResolution();
-		const GSVector2i size = GSVector2i(resolution.x, resolution.y / 2);
-		const u32 page_offset = ((size.y + 31) / 32) * src->m_TEX0.TBW * GS_BLOCKS_PER_PAGE;
-		constexpr u32 base = 0;
-
-		for (u32 channel = 0; channel < 3; channel++)
-		{
-			const GIFRegTEX0 TEX0 = GIFRegTEX0::Create(base + channel * page_offset, RTEX0.TBW, PSMCT32);
-			GSTextureCache::Target* dst = g_texture_cache->LookupTarget(TEX0, src->GetUnscaledSize(), src->GetScale(), GSTextureCache::RenderTarget, true, fbmsk);
-			if (!dst)
-			{
-				dst = g_texture_cache->CreateTarget(TEX0, size, size, src->GetScale(), GSTextureCache::RenderTarget, true, fbmsk);
-				if (!dst)
-					continue;
-			}
-
-			// Need the alpha channel.
-			dst->m_TEX0.PSM = PSMCT32;
-
-			dst->m_rt_alpha_scale = false;
-			// Alpha is unknown, since it comes from RGB.
-			dst->m_alpha_min = 0;
-			dst->m_alpha_max = 255;
-
-			dst->m_alpha_range = true;
-			dst->UpdateValidChannels(PSMCT32, fbmsk);
-			dst->UpdateValidity(GSVector4i::loadh(size));
-
-			GSHWDrawConfig& config = r.BeginHLEHardwareDraw(
-				dst->GetTexture(), nullptr, dst->GetScale(), src->GetTexture(), src->GetScale(), src->GetUnscaledRect());
-			config.pal = palette;
-			config.ps.tfx = TFX_DECAL;
-			config.ps.tcc = true;
-			config.ps.channel = ChannelFetch_RED + channel;
-			config.colormask.wrgba = 8;
-			r.EndHLEHardwareDraw(false);
-		}
-
-		return true;
-	}
 }
 
 bool GSHwHack::GSC_BlueTongueGames(GSRendererHW& r, int& skip)
@@ -1130,61 +928,6 @@ bool GSHwHack::OI_Battlefield2(GSRendererHW& r, GSTexture* rt, GSTexture* ds, GS
 	return false;
 }
 
-bool GSHwHack::OI_HauntingGround(GSRendererHW& r, GSTexture* rt, GSTexture* ds, GSTextureCache::Source* t)
-{
-	// Haunting Ground clears two targets by doing a direct colour write at 0x3000, covering a target at 0x3380.
-	// To make matters worse, it's masked. This currently isn't handled in our HLE clears, so we need to manually
-	// remove the other target.
-	if (rt && !ds && !t && r.IsConstantDirectWriteMemClear())
-	{
-		const u32 bp = RFBP;
-		const u32 bw = RFBW;
-		const u32 psm = RFPSM;
-		const u32 fbmsk = RFBMSK;
-		const GSVector4i rc = r.m_r;
-
-		for (int type = 0; type < 2; type++)
-		{
-			auto& list = g_texture_cache->m_dst[type];
-
-			for (auto i = list.begin(); i != list.end();)
-			{
-				GSTextureCache::Target* t = *i;
-				auto ei = i++;
-
-				// There's two cases we hit here - when we clear 3380 via 3000, and when we overlap 3000 by writing to 3380.
-				// The latter is actually only 256x224, which ends at 337F, but because the game's a pain in the ass, it
-				// shuffles 512x512, causing the target to expand. It'd actually be shuffling junk and wasting draw cycles,
-				// but when did that stop anyone? So, we can get away with just saying "if it's before, ignore".
-				if (t->m_TEX0.TBP0 <= bp) // don't remove ourself..
-					continue;
-
-				// Has to intersect.
-				if (!t->Overlaps(bp, bw, psm, rc))
-					continue;
-
-				// Another annoying case. Sometimes it clears with RGB masked, only writing to A. We don't want to kill the
-				// target in this case, so we'll dirty A instead.
-				if (fbmsk != 0)
-					g_texture_cache->AddDirtyRectTarget(t, rc, psm, bw, RGBAMask{GSUtil::GetChannelMask(psm, fbmsk)});
-				else
-				{
-					// Need to also remove any sources which reference this target.
-					g_texture_cache->InvalidateSourcesFromTarget(t);
-
-					list.erase(ei);
-					delete t;
-				}
-			}
-		}
-
-		g_texture_cache->InvalidateVideoMemType(GSTextureCache::DepthStencil, bp);
-	}
-
-	// Not skipping anything. This is just an invalidation hack.
-	return true;
-}
-
 #undef RPRIM
 #undef RCONTEXT
 
@@ -1314,35 +1057,6 @@ bool GSHwHack::MV_Growlanser(GSRendererHW& r)
 	return true;
 }
 
-bool GSHwHack::MV_Ico(GSRendererHW& r)
-{
-	// Ico unswizzles the depth buffer (usually) 0x1800 to (usually) 0x2800 with a Z32->C32 move,
-	// then runs a series of in-place P4 moves before sampling the result as a P8H fog LUT index
-	// field. The previous channel-shuffle HLE approximated this on the GPU, but the local memory
-	// it left behind diverged from real-GS evolution (measured against the software renderer),
-	// poisoning anything that later reads this region through CPU paths. Commit the live depth
-	// target instead and let the moves run exactly on local memory.
-
-	// Follow-up P4 shuffle moves of the same sequence: transform the committed memory directly.
-	if (r.s_n == s_last_hacked_move_n && RSPSM == PSMT4 && RDPSM == PSMT4)
-	{
-		r.m_force_cpu_move = true;
-		return false;
-	}
-
-	// 512x448 moves from Z32->C32.
-	if (RSPSM != PSMZ32 || RDPSM != PSMCT32 || RWIDTH < 512 || RHEIGHT < 448)
-		return false;
-
-	// The CPU move below reads local memory, but the depth source lives in a GPU target;
-	// flush it (and anything else overlapping) back first.
-	g_texture_cache->CommitOverlappingTargets(RSBP);
-
-	s_last_hacked_move_n = r.s_n;
-	r.m_force_cpu_move = true;
-	return false;
-}
-
 #undef RBITBLTBUF
 #undef RSBP
 #undef RSBW
@@ -1367,7 +1081,6 @@ const GSHwHack::Entry<GSRendererHW::GSC_Ptr> GSHwHack::s_get_skip_count_function
 	CRC_F(GSC_SacredBlaze),
 	CRC_F(GSC_SandGrainGames),
 	CRC_F(GSC_Simple2000Vol114),
-	CRC_F(GSC_SFEX3),
 	CRC_F(GSC_DTGames),
 	CRC_F(GSC_TalesOfLegendia),
 	CRC_F(GSC_TalesofSymphonia),
@@ -1376,7 +1089,6 @@ const GSHwHack::Entry<GSRendererHW::GSC_Ptr> GSHwHack::s_get_skip_count_function
 	CRC_F(GSC_BlueTongueGames),
 	CRC_F(GSC_Battlefield2),
 	CRC_F(GSC_NFSUndercover),
-	CRC_F(GSC_PolyphonyDigitalGames),
 	CRC_F(GSC_MetalGearSolid3),
 
 	// Channel Effect
@@ -1386,7 +1098,6 @@ const GSHwHack::Entry<GSRendererHW::GSC_Ptr> GSHwHack::s_get_skip_count_function
 	CRC_F(GSC_BurnoutGames),
 
 	// Half Screen bottom issue
-	CRC_F(GSC_Tekken5),
 
 	// Texture shuffle
 	CRC_F(GSC_BigMuthaTruckers),
@@ -1403,12 +1114,10 @@ const GSHwHack::Entry<GSRendererHW::OI_Ptr> GSHwHack::s_before_draw_functions[] 
 	CRC_F(OI_ArTonelico2),
 	CRC_F(OI_BurnoutGames),
 	CRC_F(OI_Battlefield2),
-	CRC_F(OI_HauntingGround),
 };
 
 const GSHwHack::Entry<GSRendererHW::MV_Ptr> GSHwHack::s_move_handler_functions[] = {
 	CRC_F(MV_Growlanser),
-	CRC_F(MV_Ico),
 };
 
 #undef CRC_F

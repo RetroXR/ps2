@@ -40,6 +40,10 @@ struct vk_init_info_t
 	unsigned num_required_device_layers;
 	const VkPhysicalDeviceFeatures *required_features;
 	PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
+	/* Set under negotiation v2: the device is created through it. */
+	VkDevice (*create_device_wrapper)(VkPhysicalDevice gpu, void *opaque,
+		const VkDeviceCreateInfo *create_info);
+	void *create_device_wrapper_opaque;
 };
 
 class GSDeviceVK final : public GSDevice
@@ -367,6 +371,8 @@ private:
         * them. What VMA used to do, with the decisions in our own file. */
        gs_vk_heap_t m_heap = {};
        bool m_heap_ready = false;
+       /* A reference on the Vulkan library, taken in CreateDeviceAndSwapChain. */
+       bool m_vulkan_library_held = false;
 
        /* Images made and images whose memory came back. In steady state
         * these grow together; apart means a leak, and the heap taking a
@@ -530,7 +536,7 @@ public:
 	void DrawIndexedPrimitive();
 	void DrawIndexedPrimitive(int offset, int count);
 
-	std::unique_ptr<GSDownloadTexture> CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format);
+	GSDownloadTexturePtr CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format);
 
 	void CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY);
 
@@ -548,9 +554,10 @@ public:
 		VkPipeline pipeline, bool linear, bool allow_discard);
 	void DrawStretchRect(const GSVector4& sRect, const GSVector4& dRect, const GSVector2i& ds);
 
-	void UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize);
+	void UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize, u32 samples);
 	void ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM);
 	void FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect);
+	void MoveTexels(GSTexture* sTex, GSTexture* dTex, const GSVector4& dRect, const MoveTexelsConstants& cb);
 
 	void SetupDATE(GSTexture* rt, GSTexture* ds, SetDATM datm, const GSVector4i& bbox);
 	GSTextureVK* SetupPrimitiveTrackingDATE(GSHWDrawConfig& config);

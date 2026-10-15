@@ -84,9 +84,6 @@ static GSRendererType GSsetRenderer(enum retro_hw_context_type api)
 	{
 		case RETRO_HW_CONTEXT_OPENGL:
 		case RETRO_HW_CONTEXT_OPENGL_CORE:
-		case RETRO_HW_CONTEXT_OPENGLES2:        /* TODO/FIXME */
-		case RETRO_HW_CONTEXT_OPENGLES3:        /* TODO/FIXME */
-		case RETRO_HW_CONTEXT_OPENGLES_VERSION: /* TODO/FIXME */
 			return GSRendererType::OGL;
 		case RETRO_HW_CONTEXT_VULKAN:
 #ifdef HAVE_PARALLEL_GS
@@ -160,9 +157,6 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail)
 			break;
 		case RETRO_HW_CONTEXT_OPENGL:
 		case RETRO_HW_CONTEXT_OPENGL_CORE:
-		case RETRO_HW_CONTEXT_OPENGLES2:        /* TODO/FIXME */
-		case RETRO_HW_CONTEXT_OPENGLES3:        /* TODO/FIXME */
-		case RETRO_HW_CONTEXT_OPENGLES_VERSION: /* TODO/FIXME */
 #ifdef ENABLE_OPENGL
 			g_gs_device = new GSDeviceOGL();
 			if (!g_gs_device->Create())
@@ -212,7 +206,6 @@ static const struct gs_renderer_ops* s_gs_ops = NULL;
 
 static void gsdx_op_reset(bool hardware_reset)  { g_gs_renderer->Reset(hardware_reset); }
 static void gsdx_op_gif_soft_reset(u32 mask)    { g_gs_renderer->SoftReset(mask); }
-static void gsdx_op_write_csr(u32 csr)          { g_gs_renderer->WriteCSR(csr); }
 
 static void gsdx_op_init_and_read_fifo(u8* mem, u32 size)
 {
@@ -237,11 +230,11 @@ static void gsdx_op_vsync(u32 field, bool registers_written)
 
 static int gsdx_op_freeze(int mode, freezeData* data)
 {
-	if (mode == static_cast<int>(FreezeAction::Save))
+	if (mode == static_cast<int>(FREEZE_SAVE))
 		return g_gs_renderer->Freeze(data, false);
-	if (mode == static_cast<int>(FreezeAction::Size))
+	if (mode == static_cast<int>(FREEZE_SIZE))
 		return g_gs_renderer->Freeze(data, true);
-	if (mode == static_cast<int>(FreezeAction::Load))
+	if (mode == static_cast<int>(FREEZE_LOAD))
 	{
 		// Since Defrost doesn't do a hardware reset (since it would be clearing
 		// local memory just before it's overwritten), we have to manually wipe
@@ -257,7 +250,6 @@ static u8* gsdx_op_regs_mem(void) { return g_gs_renderer->GetRegsMem(); }
 static const struct gs_renderer_ops gsdx_renderer_ops = {
 	gsdx_op_reset,
 	gsdx_op_gif_soft_reset,
-	gsdx_op_write_csr,
 	gsdx_op_init_and_read_fifo,
 	gsdx_op_read_local_memory_unsync,
 	gsdx_op_transfer,
@@ -341,7 +333,7 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, const Pcsx2Config::G
 	std::unique_ptr<u8[]> fd_data;
 	if (recreate_renderer)
 	{
-		if (s_gs_ops->freeze(static_cast<int>(FreezeAction::Size), &fd) != 0)
+		if (s_gs_ops->freeze(static_cast<int>(FREEZE_SIZE), &fd) != 0)
 		{
 			log_cb(RETRO_LOG_ERROR, "(GSreopen) Failed to get GS freeze size\n");
 			return false;
@@ -350,7 +342,7 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, const Pcsx2Config::G
 		fd_data = std::make_unique<u8[]>(fd.size);
 		fd.data = fd_data.get();
 
-		if (s_gs_ops->freeze(static_cast<int>(FreezeAction::Save), &fd) != 0)
+		if (s_gs_ops->freeze(static_cast<int>(FREEZE_SAVE), &fd) != 0)
 		{
 			log_cb(RETRO_LOG_ERROR, "(GSreopen) Failed to freeze GS\n");
 			return false;
@@ -386,7 +378,7 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, const Pcsx2Config::G
 			return false;
 		}
 
-		if (s_gs_ops->freeze(static_cast<int>(FreezeAction::Load), &fd) != 0)
+		if (s_gs_ops->freeze(static_cast<int>(FREEZE_LOAD), &fd) != 0)
 		{
 			log_cb(RETRO_LOG_ERROR, "(GSreopen) Failed to defrost\n");
 			return false;
@@ -404,9 +396,17 @@ void GSopen(const Pcsx2Config::GSOptions& config, GSRendererType renderer, enum 
 	GSConfig          = config;
 	GSConfig.Renderer = renderer;
 
-	if (OpenGSDevice(renderer, true))
-		if (!OpenGSRenderer(renderer, basemem))
-			CloseGSDevice(true);
+	if (!OpenGSDevice(renderer, true))
+	{
+		log_cb(RETRO_LOG_ERROR, "GS: no device could be created on the frontend's context (type %d); there will be no picture.\n",
+			(int)api);
+		return;
+	}
+	if (!OpenGSRenderer(renderer, basemem))
+	{
+		log_cb(RETRO_LOG_ERROR, "GS: the renderer could not be opened; there will be no picture.\n");
+		CloseGSDevice(true);
+	}
 }
 
 void GSclose(void)
@@ -425,12 +425,6 @@ void GSgifSoftReset(u32 mask)
 {
 	if (s_gs_ops && s_gs_ops->gif_soft_reset)
 		s_gs_ops->gif_soft_reset(mask);
-}
-
-void GSwriteCSR(u32 csr)
-{
-	if (s_gs_ops && s_gs_ops->write_csr)
-		s_gs_ops->write_csr(csr);
 }
 
 void GSInitAndReadFIFO(u8* mem, u32 size)
@@ -519,8 +513,7 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config, enum retro_hw_cont
 		GSConfig.UserHacks_DisablePartialInvalidation != old_config.UserHacks_DisablePartialInvalidation ||
 		GSConfig.UserHacks_TextureInsideRt != old_config.UserHacks_TextureInsideRt ||
 		GSConfig.UserHacks_CPUSpriteRenderBW != old_config.UserHacks_CPUSpriteRenderBW ||
-		GSConfig.UserHacks_CPUCLUTRender != old_config.UserHacks_CPUCLUTRender ||
-		GSConfig.UserHacks_GPUTargetCLUTMode != old_config.UserHacks_GPUTargetCLUTMode)
+		GSConfig.UserHacks_CPUCLUTRender != old_config.UserHacks_CPUCLUTRender)
 	{
 		if (GSConfig.UserHacks_ReadTCOnClose)
 			g_gs_renderer->ReadbackTextureCache();

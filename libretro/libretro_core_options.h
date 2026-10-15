@@ -286,23 +286,39 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "pcsx2_upscale_multiplier",
       "Video > Internal Resolution (Restart)",
       "Internal Resolution (Restart)",
-      NULL,
+      "Draw at a multiple of the PS2's resolution. The software renderers draw at 2x for 2x and above.",
       NULL,
       "video",
       {
-         { "1x Native (PS2)", NULL },
-         { "2x Native (~720p)", NULL },
-         { "4x Native (~1440p/2K)", NULL },
-         { "8x Native (~2880p/5K)", NULL },
+         { "1x (Native)", NULL },
+         { "2x", NULL },
+         { "4x", NULL },
+         { "8x", NULL },
          { NULL, NULL },
       },
-      "1x Native (PS2)"
+      "1x (Native)"
+   },
+   {
+      "pcsx2_native_scaling",
+      "Video > Native Scaling",
+      "Native Scaling",
+      "Render the buffers a game draws at a fraction of its frame, such as a bloom or blur pass, at native resolution instead of the internal resolution. Keeps a blur's radius and position as on the console, at the cost of the resolution of the blurred picture; 'Aggressive' also applies to the draws that scale those buffers back up. 'Automatic' uses the game database's setting for the game, or 'Normal' where it has none. Any other value is used regardless of the database and of 'Enable HW Hacks'.",
+      NULL,
+      "video",
+      {
+         { "Automatic", NULL },
+         { "disabled", NULL },
+         { "Normal", NULL },
+         { "Aggressive", NULL },
+         { NULL, NULL },
+      },
+      "Automatic"
    },
    {
       "pcsx2_pgs_ssaa",
       "Video > paraLLEl super sampling",
       "paraLLEl super sampling",
-      "Apply supersampled anti-aliasing (SSAA). Unlike straight upscaling, supersampling retains a coherent visual look where 3D elements have similar resolution as UI elements. For 2x high-res scanout you need at least '4x SSAA ordered' (or higher); 4x high-res scanout needs '16x SSAA (ordered)' specifically -- the plain 16x mode uses a sparse grid that only supports 2x. Setting this to 'Native' disables super sampling.",
+      "Apply supersampled anti-aliasing (SSAA). Unlike straight upscaling, supersampling retains a coherent visual look where 3D elements have similar resolution as UI elements. For 2x high-res scanout you need at least '4x SSAA ordered' (or higher); 4x high-res scanout needs '16x SSAA (ordered)' specifically -- the plain 16x mode uses a sparse grid that only supports 2x. '32x SSAA (ordered)' is a 4x8 grid, four samples across and eight down: it also feeds the 4x scanout at the full field height, which gives field-rendered games twice the vertical resolution of 16x ordered, at twice its cost. Setting this to 'Native' disables super sampling.",
       NULL,
       "video",
       {
@@ -313,6 +329,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
          { "8x SSAA (can high-res)", NULL },
          { "16x SSAA (can high-res)", NULL },
          { "16x SSAA (ordered, can high-res 4x)", NULL },
+         { "32x SSAA (ordered, can high-res 4x full)", NULL },
          { NULL, NULL },
       },
       "Native"
@@ -321,13 +338,15 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "pcsx2_pgs_high_res_scanout",
       "Video > paraLLEl experimental High-res scanout",
       "paraLLEl experimental High-res scanout",
-      "Scans out above native resolution with paraLLEl (2x: 640x448 becomes 1280x896; 4x: 2560x1792). Doesn't work with every game, some might require patches on top. 2x requires Supersampling at 4x SSAA ordered or higher; 4x requires 16x SSAA ordered, and falls back to 2x on lower grids. At 16x SSAA with plain 4x scanout the whole sample grid is spent on resolution, so edges keep no residual anti-aliasing; the anti-aliased 4x mode instead reconstructs each output pixel from the neighboring samples with a tent filter, trading a slight softness for far less texture shimmer.",
+      "Scans out above native resolution with paraLLEl (2x: 640x448 becomes 1280x896; 4x: 2560x1792). Doesn't work with every game, some might require patches on top. 2x requires Supersampling at 4x SSAA ordered or higher; 4x requires 16x SSAA ordered, and falls back to 2x on lower grids. At 16x SSAA with plain 4x scanout the whole sample grid is spent on resolution, so edges keep no residual anti-aliasing; the anti-aliased 4x mode instead reconstructs each output pixel from the neighboring samples with a tent filter, trading a slight softness for far less texture shimmer. A game that renders one field at a time gets half the height from 4x (2560x896); the full field height mode gives it the whole 2560x1792 and needs 32x SSAA ordered, falling back to the plain 4x on smaller grids. Its anti-aliased variant applies the same tent reconstruction at that height, and falls back to the anti-aliased 4x on smaller grids.",
       NULL,
       "video",
       {
          { "enabled", "enabled (2x)" },
          { "enabled (4x)", NULL },
          { "enabled (4x, anti-aliased)", NULL },
+         { "enabled (4x, full field height)", NULL },
+         { "enabled (4x, anti-aliased, full field height)", NULL },
          { "disabled", NULL },
          { NULL, NULL },
       },
@@ -337,7 +356,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "pcsx2_pgs_ss_tex",
       "Video > paraLLEl experimental SSAA texture",
       "paraLLEl experimental SSAA texture",
-      "Feedback higher resolution textures. May help high-res scanout image quality. Highly experimental and may cause rendering glitches.",
+      "Feedback higher resolution textures. With super sampling on, a copy of the picture (a post-processing pass that moves it texel for pixel) always keeps its super samples; enabling this also feeds them to blurs and other effects that read the picture back. May help high-res scanout image quality. Highly experimental and may cause rendering glitches.",
       NULL,
       "video",
       {
@@ -583,15 +602,16 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "enabled"
    },
-#if 0
    {
       "pcsx2_sw_renderer_threads",
-      "Video > Software Renderer Threads",
-      "Software Renderer Threads",
-      NULL,
+      "Video > Software Renderer Extra Threads",
+      "Software Renderer Extra Threads",
+      "Number of extra worker threads the software renderer rasterizes with, on top of the GS thread itself. 0 rasterizes on the GS thread alone (lowest latency, best on 2-4 core CPUs). More threads help scenes with many alpha effects on CPUs with spare cores. Only used by the software renderer.",
       NULL,
       "video",
       {
+         { "0", NULL },
+         { "1", NULL },
          { "2", NULL },
          { "3", NULL },
          { "4", NULL },
@@ -606,7 +626,6 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       },
       "2"
    },
-#endif
    {
       "pcsx2_vu_accurate_addsub",
       "Emulation > VU Accurate Add/Sub",
@@ -902,21 +921,6 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "disabled"
    },
    {
-      "pcsx2_gpu_target_clut",
-      "HW Hacks > GPU Target CLUT",
-      "GPU Target CLUT",
-      NULL,
-      NULL,
-      "hw_hacks",
-      {
-         { "disabled", NULL },
-         { "Exact Match", NULL },
-         { "Check Inside Target", NULL },
-         { NULL, NULL },
-      },
-      "disabled"
-   },
-   {
       "pcsx2_auto_flush",
       "HW Hacks > Auto Flush",
       "Auto Flush",
@@ -1043,21 +1047,6 @@ struct retro_core_option_v2_definition option_defs_us[] = {
          { "Special (Texture)", NULL },
          { "Special (Texture - Aggressive)", NULL },
          { "Align to Native", NULL },
-         { NULL, NULL },
-      },
-      "disabled"
-   },
-   {
-      "pcsx2_native_scaling",
-      "HW Hacks > Native Scaling",
-      "Native Scaling",
-      NULL,
-      NULL,
-      "hw_hacks",
-      {
-         { "disabled", NULL },
-         { "Normal", NULL },
-         { "Aggressive", NULL },
          { NULL, NULL },
       },
       "disabled"

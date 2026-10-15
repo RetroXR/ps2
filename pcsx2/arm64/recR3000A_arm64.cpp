@@ -22,6 +22,7 @@
 #include "common/Pcsx2Defs.h"
 #include "IopMem.h"
 #include "IopHw.h"
+#include "IopDma.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -72,7 +73,7 @@ namespace
 	constexpr u32 kRamWords = kRamBytes >> 2;
 	BlockFn*      s_lut      = nullptr;
 	inline bool InRam(u32 np) { return np < kRamBytes; }
-	inline void LutClearAll() { if (s_lut) madvise(s_lut, (size_t)kRamWords * sizeof(BlockFn), MADV_DONTNEED); }
+	inline void LutClearAll() { if (s_lut) memzero_pages(s_lut, (size_t)kRamWords * sizeof(BlockFn)); }
 
 	// Word-granular "native code covers this RAM word" bitmap (64KB). Every IOP
 	// RAM store lands in recClearIOP, so the common case (word with no compiled
@@ -87,15 +88,23 @@ namespace
 
 	bool VixlEmitSelfTest()
 	{
-		MacroAssembler masm;
-		masm.Add(x0, x0, 1);
-		masm.Ret();
-		masm.FinalizeCode();
-		vixl::CodeBuffer* buf = masm.GetBuffer();
-		buf->SetExecutable();
-		auto fn = buf->GetStartAddress<int64_t (*)(int64_t)>();
-		const int64_t r = fn(41);
-		buf->SetWritable();
+		// Emit into a real code page: VIXL's own buffer is malloc'd on Darwin
+		// (VIXL_CODE_BUFFER_MALLOC), where SetExecutable() is a no-op.
+		constexpr size_t kPage = 16384;
+		u8* page = (u8*)memjit_alloc(kPage);
+		if (!page)
+			return false;
+		memjit_write_begin();
+		{
+			MacroAssembler masm(page, kPage, PositionDependentCode);
+			masm.Add(x0, x0, 1);
+			masm.Ret();
+			masm.FinalizeCode();
+		}
+		memjit_write_end();
+		memsync(page, page + 8);
+		const int64_t r = reinterpret_cast<int64_t (*)(int64_t)>(page)(41);
+		memjit_free(page, kPage);
 		return r == 42;
 	}
 
@@ -172,11 +181,11 @@ namespace
 	}
 
 	// C.68: ADDI/ADD/SUB (psxADDI/psxADD/psxSUB drop the integer-overflow trap
-	// and are byte-for-byte the U forms -- same call as EE C.42) and RFE (pure
-	// Status bit shuffle, R3000AOpcodeTables.cpp psxRFE; re-enabling IEc has no
-	// immediate side effect in the interpreter either, pending interrupts wait
-	// for the next event test). Checked in BOTH EmitSimple and IsTranslatable
-	// so block building and delay-slot inlining stay consistent.
+	// and are byte-for-byte the U forms -- same call as EE C.42) and RFE (the
+	// Status bit shuffle of psxRFE, then iopTestIntc like rpsxRFE so an
+	// interrupt pending behind IEc is raised at the next branch). Checked in
+	// BOTH EmitSimple and IsTranslatable so block building and delay-slot
+	// inlining stay consistent.
 	// Translate one side-effect-light instruction (ALU + aligned load/store) to
 	// native AArch64. Returns false (emitting nothing) for control flow and
 	// anything not covered. gpr (x19) is callee-saved so it survives mem helpers.
@@ -318,6 +327,14 @@ namespace
 			{
 				LoadGpr(m, w0, gpr, rs); m.Add(w0, w0, simm);
 				LoadGpr(m, w1, gpr, rt);
+#if defined(__APPLE__)
+				// iopMemWrite8/16 take u8/u16. Apple's arm64 ABI makes the caller
+				// extend narrow arguments to 32 bits and the callee relies on it,
+				// so pass the value already truncated. AAPCS64 elsewhere has the
+				// callee extend, so the plain register is correct there as is.
+				if (op == 0x28) m.Uxtb(w1, w1);
+				else if (op == 0x29) m.Uxth(w1, w1);
+#endif
 				uint64_t fn = (op == 0x2b) ? reinterpret_cast<uint64_t>(&iopMemWrite32)
 				            : (op == 0x29) ? reinterpret_cast<uint64_t>(&iopMemWrite16)
 				            : reinterpret_cast<uint64_t>(&iopMemWrite8);
@@ -388,7 +405,7 @@ namespace
 			// ---- C.34: COP0 moves. psxMFC0/CFC0/MTC0/CTC0 are plain copies
 			// against psxRegs.CP0.r[rd] (offset 136 + rd*4 from the GPR base;
 			// no side effects anywhere in this interpreter, not even for
-			// Status/Cause). RFE (rs=0x10) stays on the interpreter.
+			// Status/Cause). RFE (rs=0x10) is handled below.
 			case 0x10:
 			{
 				const u32 rs_field = rs;
@@ -413,6 +430,11 @@ namespace
 					m.And(w0, w0, 0xfffffff0);
 					m.Orr(w0, w0, Operand(w1, LSR, 2));
 					m.Str(w0, MemOperand(gpr, 136 + 12 * 4));
+					// An interrupt left pending while IEc was clear is raised
+					// now, as rpsxRFE does: iopTestIntc pulls the next event
+					// test to within two cycles.
+					m.Mov(x16, reinterpret_cast<uint64_t>(&iopTestIntc));
+					m.Blr(x16);
 					return true;
 				}
 				return false;
@@ -643,12 +665,15 @@ namespace
 			return true;
 		}
 
-		// link (before the delay slot, unconditionally)
+		// JR/JALR target: read before the link is written -- `jalr rd, rs`
+		// with rd == rs jumps to the old rs (psxJALR)
+		if (is_jr) { LoadGpr(m, w21, gpr, rs); }
+		// link (before the delay slot, unconditionally); the BxxZAL condition
+		// below reads rs after it, as psxBGEZAL/psxBLTZAL do
 		if (link > 0) { m.Mov(w0, bpc + 8); StoreGpr(m, w0, gpr, (u32)link); }
-		// snapshot condition operands / jr target before the delay slot can clobber them
+		// snapshot condition operands before the delay slot can clobber them
 		if (two)   { LoadGpr(m, w20, gpr, rs); LoadGpr(m, w21, gpr, rt); }
 		else if (one) { LoadGpr(m, w20, gpr, rs); }
-		if (is_jr) { LoadGpr(m, w21, gpr, rs); }
 		// the always-executed delay slot
 		EmitSimple(m, gpr, ds);
 		// time: n_leading native ops + the branch + the delay slot
@@ -692,6 +717,7 @@ namespace
 		}
 
 		u8* start = s_code + s_code_pos;
+		memjit_write_begin(); // W^X: code cache writable on this thread until FinalizeCode
 		MacroAssembler masm(start, kCodeCacheSize - s_code_pos, PositionDependentCode);
 		s_irc.Reset(); // fresh per-block register-cache state (C.32)
 
@@ -757,6 +783,7 @@ namespace
 		}
 
 		masm.FinalizeCode();
+		memjit_write_end();
 		const size_t sz = masm.GetSizeOfCodeGenerated();
 		memsync(reinterpret_cast<void*>(start), (u8*)(reinterpret_cast<void*>(start)) + (sz));
 		s_code_pos += (sz + 15) & ~size_t(15);
@@ -804,9 +831,7 @@ static void recReserve(void)
 	s_ok = VixlEmitSelfTest();
 	if (!s_code)
 	{
-		s_code = (u8*)mmap(nullptr, kCodeCacheSize, PROT_READ | PROT_WRITE | PROT_EXEC,
-		                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-		if (s_code == MAP_FAILED) s_code = nullptr;
+		s_code = (u8*)memjit_alloc(kCodeCacheSize);
 	}
 	if (!s_lut)
 	{
@@ -907,7 +932,7 @@ static void recShutdown(void)
 	s_blocks.clear();
 	s_page.clear();
 	memset(s_covered, 0, sizeof(s_covered));
-	if (s_code) { munmap(s_code, kCodeCacheSize); s_code = nullptr; }
+	if (s_code) { memjit_free(s_code, kCodeCacheSize); s_code = nullptr; }
 	s_code_pos = 0;
 }
 

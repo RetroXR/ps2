@@ -15,10 +15,17 @@
 
 #pragma once
 
+#include "Pcsx2Defs.h"
+
+/* This header is reached from C through VirtualMemory.h, so these cannot be
+ * unconditional -- but most of the tree, the DX and Vulkan backends among
+ * them, has always picked up <memory> and friends through here. Keep giving
+ * C++ what it had rather than chasing the includes across every dependent. */
+#ifdef __cplusplus
 #include <map>
 #include <memory>
 #include <string>
-#include "Pcsx2Defs.h"
+#endif
 
 // --------------------------------------------------------------------------------------
 //  PageProtectionMode

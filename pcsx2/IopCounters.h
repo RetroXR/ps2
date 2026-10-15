@@ -17,18 +17,28 @@
 
 #include "common/Pcsx2Types.h"
 
-struct psxCounter
+typedef struct psxCounter
 {
 	u64 count, target;
 	u32 mode;
 	u32 rate, interrupt;
 	u32 startCycle;
 	s32 deltaCycles;
-};
+} psxCounter;
 
 #define NUM_COUNTERS 8
 
-extern psxCounter psxCounters[NUM_COUNTERS];
+/* MSVC decorates C++ data symbols; the ELF ABI does not. A variable a C
+ * unit references therefore has to be declared -- and so, through this
+ * header, defined -- with C language linkage, or the Windows link fails
+ * on an undecorated reference while every other target is fine. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+	extern psxCounter psxCounters[NUM_COUNTERS];
+#ifdef __cplusplus
+}
+#endif
 
 extern void psxRcntInit();
 extern void psxRcntUpdate();

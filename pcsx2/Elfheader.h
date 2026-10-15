@@ -15,12 +15,9 @@
 
 #pragma once
 
-#include <vector>
+#include "MemoryTypes.h"
 
-#include "CDVD/IsoFS/SectorSource.h"
-#include "CDVD/IsoFS/IsoFS.h"
-
-struct ELF_HEADER {
+typedef struct ELF_HEADER {
 	u8	e_ident[16];	//0x7f,"ELF"  (ELF file identifier)
 	u16	e_type;			//ELF type: 0=NONE, 1=REL, 2=EXEC, 3=SHARED, 4=CORE
 	u16	e_machine;	  //Processor: 8=MIPS R3000
@@ -35,7 +32,31 @@ struct ELF_HEADER {
 	u16	e_shentsize;	//Section headers entry size
 	u16	e_shnum;		//Number of section headers
 	u16	e_shstrndx;	 //Section header stringtable index
-};
+} ELF_HEADER;
+
+/* MSVC decorates C++ data symbols; the ELF ABI does not. A variable a C
+ * unit references therefore has to be declared -- and so, through this
+ * header, defined -- with C language linkage, or the Windows link fails
+ * on an undecorated reference while every other target is fine. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+	extern u32 ElfCRC;
+#ifdef __cplusplus
+}
+#endif
+extern u32 ElfEntry;
+
+/* The loader itself is C++: it owns a std::vector and reads through IsoFile.
+ * The header above and the two values below it are what the rest of the
+ * emulator, C included, actually needs. */
+#ifdef __cplusplus
+
+#include <string>
+#include <vector>
+
+#include "CDVD/IsoFS/SectorSource.h"
+#include "CDVD/IsoFS/IsoFS.h"
 
 class ElfObject final
 {
@@ -59,6 +80,6 @@ class ElfObject final
 		bool CheckElfSize(s64 size);
 };
 
-extern u32 ElfCRC;
-extern u32 ElfEntry;
 extern std::string LastELF;
+
+#endif

@@ -15,6 +15,24 @@
 
 #pragma once
 
+/* MSVC's C89 mode has no bool. One byte matches what the C++ side uses on
+ * every ABI this builds for, which matters because V_Core and V_Voice are
+ * shared between the two. */
+#ifndef __cplusplus
+#if defined(_MSC_VER) && !defined(__clang__)
+#if _MSC_VER < 1800
+typedef unsigned char bool;
+#define true  1
+#define false 0
+#else
+#include <stdbool.h>
+#endif
+#else
+#include <stdbool.h>
+#endif
+#endif
+
+
 #ifdef __cplusplus
 #include <cstdint>
 #else
@@ -47,7 +65,7 @@ typedef unsigned int uint;
 // uses of these types, that means we can't have constructors). Embedded functions for
 // performing explicit conversion from 64 and 32 bit values are provided instead.
 //
-union u128
+typedef union u128
 {
 	struct
 	{
@@ -59,10 +77,10 @@ union u128
 	u32 _u32[4];
 	u16 _u16[8];
 	u8 _u8[16];
-};
+} u128;
 
-struct s128
+typedef struct s128
 {
 	s64 lo;
 	s64 hi;
-};
+} s128;

@@ -176,7 +176,7 @@ bool GSDeviceOGL::CheckFeatures(bool& buggy_pbo)
 	GLint minor_gl = 0;
 	glGetIntegerv(GL_MAJOR_VERSION, &major_gl);
 	glGetIntegerv(GL_MINOR_VERSION, &minor_gl);
-	if (!GLAD_GL_VERSION_3_3 && !GLAD_GL_ES_VERSION_3_1)
+	if (!GLAD_GL_VERSION_3_3)
 	{
 		log_cb(RETRO_LOG_ERROR, "OpenGL is not supported. Only OpenGL %d.%d\n was found\n", major_gl, minor_gl);
 		return false;
@@ -302,7 +302,7 @@ bool GSDeviceOGL::Create()
 
 	if (!GSConfig.DisableShaderCache)
 	{
-		if (!m_shader_cache.Open(false))
+		if (!m_shader_cache.Open())
 			log_cb(RETRO_LOG_WARN, "Shader cache failed to open.\n");
 	}
 	else
@@ -436,6 +436,7 @@ bool GSDeviceOGL::Create()
 				m_convert.ps[i].RegisterUniform("SBW");
 				m_convert.ps[i].RegisterUniform("DBW");
 				m_convert.ps[i].RegisterUniform("ScaleFactor");
+				m_convert.ps[i].RegisterUniform("PageOffset");
 			}
 			else if (static_cast<ShaderConvert>(i) == ShaderConvert::YUV)
 			{
@@ -445,12 +446,18 @@ bool GSDeviceOGL::Create()
 			{
 				m_convert.ps[i].RegisterUniform("offset");
 				m_convert.ps[i].RegisterUniform("scale");
+				m_convert.ps[i].RegisterUniform("samples");
 			}
 			else if (static_cast<ShaderConvert>(i) == ShaderConvert::DOWNSAMPLE_COPY)
 			{
 				m_convert.ps[i].RegisterUniform("ClampMin");
 				m_convert.ps[i].RegisterUniform("DownsampleFactor");
 				m_convert.ps[i].RegisterUniform("Weight");
+			}
+			else if (static_cast<ShaderConvert>(i) == ShaderConvert::MOVE_TEXELS)
+			{
+				m_convert.ps[i].RegisterUniform("MoveA");
+				m_convert.ps[i].RegisterUniform("MoveB");
 			}
 		}
 
@@ -894,9 +901,9 @@ void GSDeviceOGL::CommitClear(GSTexture* t, bool use_write_fbo)
 	}
 }
 
-std::unique_ptr<GSDownloadTexture> GSDeviceOGL::CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format)
+GSDownloadTexturePtr GSDeviceOGL::CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format)
 {
-	return GSDownloadTextureOGL::Create(width, height, format);
+	return GSDownloadTexturePtr(GSDownloadTextureOGL::Create(width, height, format).release());
 }
 
 GLuint GSDeviceOGL::CreateSampler(PSSamplerSelector sel)
@@ -1121,6 +1128,8 @@ std::string GSDeviceOGL::GetPSSource(const PSSelector& sel)
 	GSDeviceOGLAppendShaderMacro(macro, "PS_DATE", sel.date);
 	GSDeviceOGLAppendShaderMacro(macro, "PS_TCOFFSETHACK", sel.tcoffsethack);
 	GSDeviceOGLAppendShaderMacro(macro, "PS_REGION_RECT", sel.region_rect);
+	GSDeviceOGLAppendShaderMacro(macro, "PS_SAMPLE_MAP", sel.sample_map);
+	GSDeviceOGLAppendShaderMacro(macro, "PS_NATIVE_TAPS", sel.native_taps);
 	GSDeviceOGLAppendShaderMacro(macro, "PS_BLEND_A", sel.blend_a);
 	GSDeviceOGLAppendShaderMacro(macro, "PS_BLEND_B", sel.blend_b);
 	GSDeviceOGLAppendShaderMacro(macro, "PS_BLEND_C", sel.blend_c);
@@ -1304,7 +1313,7 @@ void GSDeviceOGL::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture
 	DrawStretchRect(flip_sr, dRect, ds);
 }
 
-void GSDeviceOGL::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
+void GSDeviceOGL::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize, u32 samples)
 {
 	CommitClear(sTex, false);
 
@@ -1313,6 +1322,7 @@ void GSDeviceOGL::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, 
 	prog.Bind();
 	prog.Uniform3ui(0, offsetX, offsetY, dOffset);
 	prog.Uniform1f(1, sScale);
+	prog.Uniform1ui(2, samples);
 
 	OMSetDepthStencilState(m_convert.dss);
 	OMSetBlendState(false);
@@ -1322,7 +1332,7 @@ void GSDeviceOGL::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, 
 	PSSetShaderResource(0, sTex);
 	PSSetSamplerState(m_convert.pt);
 
-	const GSVector4 dRect(0, 0, dSize, 1);
+	const GSVector4 dRect(0, 0, dSize * samples, samples);
 	DrawStretchRect(GSVector4::zero(), dRect, dTex->GetSize());
 }
 
@@ -1336,6 +1346,7 @@ void GSDeviceOGL::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 off
 	prog.Uniform1ui(0, SBW);
 	prog.Uniform1ui(1, DBW);
 	prog.Uniform1f(2, sScale);
+	prog.Uniform1ui(3, IndexedConversionPageOffset(offsetX, offsetY, SBW));
 
 	OMSetDepthStencilState(m_convert.dss);
 	OMSetBlendState(false);
@@ -1359,6 +1370,27 @@ void GSDeviceOGL::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u3
 	prog.Uniform2iv(0, clamp_min.v);
 	prog.Uniform1i(1, downsample_factor);
 	prog.Uniform1f(2, static_cast<float>(downsample_factor * downsample_factor));
+
+	OMSetDepthStencilState(m_convert.dss);
+	OMSetBlendState(false);
+	OMSetColorMaskState();
+	OMSetRenderTargets(dTex, nullptr);
+
+	PSSetShaderResource(0, sTex);
+	PSSetSamplerState(m_convert.pt);
+
+	DrawStretchRect(GSVector4::zero(), dRect, dTex->GetSize());
+}
+
+void GSDeviceOGL::MoveTexels(GSTexture* sTex, GSTexture* dTex, const GSVector4& dRect, const MoveTexelsConstants& cb)
+{
+	CommitClear(sTex, false);
+
+	constexpr ShaderConvert shader = ShaderConvert::MOVE_TEXELS;
+	GLProgram& prog = m_convert.ps[static_cast<int>(shader)];
+	prog.Bind();
+	prog.Uniform4ui(0, cb.dst_origin, cb.old_base, cb.src_base, cb.remap_base);
+	prog.Uniform4ui(1, cb.flags, 0, 0, 0);
 
 	OMSetDepthStencilState(m_convert.dss);
 	OMSetBlendState(false);
@@ -1919,6 +1951,8 @@ void GSDeviceOGL::RenderHW(GSHWDrawConfig& config)
 			config.colclip_update_area = config.drawarea;
 
 			hdr_rt = CreateRenderTarget(rtsize.x, rtsize.y, GSTexture::Format::ColorClip, false);
+			if (!hdr_rt)
+				return;
 			OMSetRenderTargets(hdr_rt, config.ds, nullptr);
 
 			g_gs_device->SetColorClipTexture(hdr_rt);

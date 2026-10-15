@@ -6,6 +6,8 @@
 #include "thread_prims.hpp"
 #include <features/features_cpu.h>
 #include "gs_renderer.hpp"
+#include "pgs_vertex_kernels.h"
+#include <cstdlib>
 /* The profiler lives in the emulator tree, which this vendored library does
  * not otherwise include. Only reach for it when profiling is being built;
  * otherwise define the macro away so the library stays self-contained. */
@@ -100,7 +102,7 @@ struct RangeMerger
 	}
 };
 
-static constexpr int MaxSamples = 16;
+static constexpr int MaxSamples = 32;
 static constexpr int PhaseLUTGridSize = 64;
 static constexpr int MaxPhaseLUTResults = MaxSamples * 3 * 3;
 
@@ -124,25 +126,32 @@ static int compute_sample_points(
 		for (int i = 0; i < num_sample_points; i++)
 		{
 			constexpr int sparse_offsets[4] = {0, 2, 3, 1};
-			sample_points[i] = ivec2(i / 8, i % 8);
+			sample_points[i] = ivec2{ i / 8, i % 8 };
 			sample_points[i].x *= 4;
 			sample_points[i].x += sparse_offsets[i % 4];
 		}
 	}
 	else
 	{
+		// The ordered 4x8 grid has a third row bit and keeps its columns
+		// in line: its samples sit at every other position across, like
+		// the checkerboards' do, but the same ones on every row.
+		const bool ordered_4x8 = sampling_rate_x_log2 == 2 && sampling_rate_y_log2 == 3;
+
 		for (int i = 0; i < num_sample_points; i++)
 		{
 			sample_points[i].y = (i >> 0) & 1;
 			sample_points[i].x = (i >> 1) & 1;
 			sample_points[i].y += ((i >> 2) & 1) * 2;
 			sample_points[i].x += ((i >> 3) & 1) * 2;
+			sample_points[i].y += ((i >> 4) & 1) * 4;
 
 			// Checkerboards
 			if (sampling_rate_y_log2 - sampling_rate_x_log2 == 1)
 			{
 				sample_points[i].x *= 2;
-				sample_points[i].x += i % 2;
+				if (!ordered_4x8)
+					sample_points[i].x += i % 2;
 			}
 		}
 	}
@@ -151,9 +160,13 @@ static int compute_sample_points(
 	for (int i = 0; i < num_sample_points; i++)
 	{
 		int scale_factor = PhaseLUTGridSize >> sampling_rate_y_log2;
-		sample_points[i] *= scale_factor;
+		sample_points[i].x *= scale_factor;
+		sample_points[i].y *= scale_factor;
 		if (nearest)
-			sample_points[i] += (scale_factor - 1) >> 1;
+		{
+			sample_points[i].x += (scale_factor - 1) >> 1;
+			sample_points[i].y += (scale_factor - 1) >> 1;
+		}
 	}
 
 	return num_sample_points;
@@ -178,9 +191,9 @@ static int compute_phase_lut_samples(
 
 				auto &result = results[num_results++];
 				result.sample_id = i;
-				result.texel_offset = ivec2(texel_x, texel_y);
-				result.dist = muglm::abs(ivec2(dist_x, dist_y));
-				result.max_dist = muglm::max(result.dist.x, result.dist.y);
+				result.texel_offset = ivec2{ texel_x, texel_y };
+				result.dist = ivec2{ std::abs(dist_x), std::abs(dist_y) };
+				result.max_dist = std::max(result.dist.x, result.dist.y);
 			}
 		}
 	}
@@ -274,15 +287,32 @@ void GSRenderer::init_phase_lut(uint32_t sampling_rate_x_log2, uint32_t sampling
 			// .x: lower 16 bits encode 4 sample IDs.
 			// .x: higher 16 bits encode 4 i2x2 texel offsets.
 			// .y: Kernel weights in unorm8x4.
+			// Past 16 samples an ID takes 5 bits: the four IDs fill the
+			// low 20 bits and the three offsets that can be non-zero the
+			// high 12 (the first sample's offset is always zero).
+			const bool wide_ids = num_sample_points > 16;
 			for (int i = 0; i < 4; i++)
 			{
 				int sample_id = results[i].sample_id;
 				auto &texel_offset = results[i].texel_offset;
-				samples[y][x].x |= sample_id << (4 * i);
-				samples[y][x].x |= (texel_offset.x & 3u) << (4 * i + 16 + 0);
-				samples[y][x].x |= (texel_offset.y & 3u) << (4 * i + 16 + 2);
-				vec2 dist = vec2(results[i].dist) / vec2(falloff_dist);
-				weights[i] = muglm::max(0.0f, 1.0f - dist.x) * muglm::max(0.0f, 1.0f - dist.y);
+				if (wide_ids)
+				{
+					samples[y][x].x |= sample_id << (5 * i);
+					if (i > 0)
+					{
+						samples[y][x].x |= (texel_offset.x & 3u) << (4 * (i - 1) + 20 + 0);
+						samples[y][x].x |= (texel_offset.y & 3u) << (4 * (i - 1) + 20 + 2);
+					}
+				}
+				else
+				{
+					samples[y][x].x |= sample_id << (4 * i);
+					samples[y][x].x |= (texel_offset.x & 3u) << (4 * i + 16 + 0);
+					samples[y][x].x |= (texel_offset.y & 3u) << (4 * i + 16 + 2);
+				}
+				vec2 dist = vec2{ float(results[i].dist.x) / float(falloff_dist),
+				                  float(results[i].dist.y) / float(falloff_dist) };
+				weights[i] = std::max(0.0f, 1.0f - dist.x) * std::max(0.0f, 1.0f - dist.y);
 				weight_sum += weights[i];
 			}
 
@@ -322,11 +352,46 @@ void GSRenderer::init_phase_lut(uint32_t sampling_rate_x_log2, uint32_t sampling
 	buffers.phase_lut = device->create_image(info, level_data);
 }
 
-void GSRenderer::invalidate_super_sampling_state(
-    uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2)
+static VkDeviceSize vram_buffer_size(uint32_t vram_size, SuperSampling super_sampling)
 {
+	// One copy of VRAM for single-rate, one reference copy of VRAM, and
+	// one per sample, doubled for the shadow copy the feedback hazards
+	// read from.
+	VkDeviceSize size = vram_size;
+	if (super_sampling != SuperSampling::X1)
+		size *= 1 + 1 + int(super_sampling);
+	return size * 2;
+}
+
+void GSRenderer::invalidate_super_sampling_state(
+    uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2, bool copies_only)
+{
+	super_sampled_copies_only = copies_only;
 	if (!device || !buffers.gpu)
 		return;
+
+	// A grid with more samples than the buffer holds copies for: replace
+	// the buffer with one that does, carrying the live VRAM across. The
+	// sample copies and the shadow are cleared below either way.
+	auto needed = SuperSampling(1u << (sampling_rate_x_log2 + sampling_rate_y_log2));
+	if (vram_buffer_size(vram_size, needed) > buffers.gpu->get_create_info().size)
+	{
+		flush_submit(0);
+		device->wait_idle();
+
+		bool host_visible = false;
+		auto grown = create_vram_buffer(vram_buffer_size(vram_size, needed), host_visible);
+		auto cmd = device->request_command_buffer();
+		cmd->copy_buffer(*grown, 0, *buffers.gpu, 0, vram_size);
+		cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+		             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+		device->submit(cmd);
+		device->wait_idle();
+
+		if (buffers.cpu == buffers.gpu)
+			buffers.cpu = grown;
+		buffers.gpu = std::move(grown);
+	}
 
 	VkDeviceSize clear_size = buffers.gpu->get_create_info().size - vram_size;
 	if (!clear_size)
@@ -358,6 +423,8 @@ SuperSampling GSRenderer::get_max_supported_super_sampling() const
 		max_ssaa = SuperSampling::X8;
 	if (device->supports_subgroup_size_log2(true, 4, 6))
 		max_ssaa = SuperSampling::X16;
+	if (device->supports_subgroup_size_log2(true, 5, 6))
+		max_ssaa = SuperSampling::X32;
 
 	return max_ssaa;
 }
@@ -367,36 +434,48 @@ void GSRenderer::set_field_aware_super_sampling(bool enable)
 	field_aware_super_sampling = enable;
 }
 
-void GSRenderer::init_vram(const GSOptions &options)
+Vulkan::BufferHandle GSRenderer::create_vram_buffer(VkDeviceSize size, bool &host_visible)
 {
 	Vulkan::BufferCreateInfo info = {};
 	info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-
-	// One copy of VRAM for single-rate, one reference copy of VRAM, and up to 16 sample references.
-	// About 78 MB. This isn't too bad.
-	if (options.dynamic_super_sampling)
-		info.size = vram_size * (1 + 1 + int(get_max_supported_super_sampling()));
-	else if (options.super_sampling != SuperSampling::X1)
-		info.size = vram_size * (1 + 1 + int(options.super_sampling));
-	else
-		info.size = vram_size;
-
-	// Need a shadow copy of VRAM for various difficult feedback hazards.
-	// Simpler to reuse the same buffer.
-	info.size *= 2;
-
+	info.size = size;
 	// Ideally we just have one big memory pool.
 	// On iGPU there should be no need to copy memory around.
 	info.domain = Vulkan::BufferDomain::UMACachedCoherentPreferDevice;
 	info.misc = Vulkan::BUFFER_MISC_ZERO_INITIALIZE_BIT;
-	buffers.gpu = device->create_buffer(info);
-	device->set_name(*buffers.gpu, "vram-gpu");
+	auto buffer = device->create_buffer(info);
+	device->set_name(*buffer, "vram-gpu");
+	host_visible = device->map_host_buffer(*buffer, 0) != nullptr;
+	return buffer;
+}
 
-	if (!device->map_host_buffer(*buffers.gpu, 0))
+void GSRenderer::init_vram(const GSOptions &options)
+{
+	// The sample copies are held for the grid in use, and for the
+	// grids up to 16 samples when the rate can change in flight, so a
+	// change among them costs no reallocation. The 32-sample grid is
+	// reserved only when configured from the start; selected later, the
+	// buffer grows for it then.
+	SuperSampling reserved = options.super_sampling;
+	if (options.dynamic_super_sampling)
 	{
+		reserved = get_max_supported_super_sampling();
+		if (reserved > SuperSampling::X16 && options.super_sampling <= SuperSampling::X16)
+			reserved = SuperSampling::X16;
+	}
+	reserved = SuperSampling(std::min<uint32_t>(uint32_t(reserved), uint32_t(get_max_supported_super_sampling())));
+
+	bool host_visible = false;
+	buffers.gpu = create_vram_buffer(vram_buffer_size(vram_size, reserved), host_visible);
+
+	if (!host_visible)
+	{
+		Vulkan::BufferCreateInfo info = {};
+		info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 		info.domain = Vulkan::BufferDomain::CachedHost;
-		buffers.cpu = device->create_buffer(info);
+		info.misc = Vulkan::BUFFER_MISC_ZERO_INITIALIZE_BIT;
 		info.size = vram_size;
+		buffers.cpu = device->create_buffer(info);
 		device->set_name(*buffers.cpu, "vram-cpu");
 		LOGI("Discrete GPU detected. Opting in for PCI-e copies to keep CPU/GPU in sync.\n");
 	}
@@ -406,6 +485,8 @@ void GSRenderer::init_vram(const GSOptions &options)
 		buffers.cpu = buffers.gpu;
 	}
 
+	Vulkan::BufferCreateInfo info = {};
+	info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 	info.domain = Vulkan::BufferDomain::Device;
 	info.size = CLUTInstances * CLUTSize;
 	buffers.clut = device->create_buffer(info);
@@ -743,7 +824,8 @@ void GSRenderer::kick_compilation_tasks()
 
 		task_state->thread = PGS::thread([this, task_state, moved_tasks = std::move(deferred)]()
 		{
-			// Just shuts up warnings.
+			// Compiles pipelines only, never records a command buffer,
+			// so it can share index 0 rather than take a pool of its own.
 			Util::register_thread_index(0);
 			for (auto &task: moved_tasks)
 			{
@@ -771,12 +853,14 @@ GSRenderer::GSRenderer(PageTracker &tracker_)
 
 		for (;;)
 		{
+			bool stop;
 			{
 				PGS::unique_lock holder{timeline_lock};
 				timeline_cond.wait(holder, [&]() { return last_waited < last_submitted_timeline; });
+				stop = last_submitted_timeline == UINT64_MAX;
 			}
 
-			if (last_submitted_timeline == UINT64_MAX)
+			if (stop)
 				break;
 
 			last_waited++;
@@ -902,11 +986,11 @@ void GSRenderer::check_flush_stats()
 #endif
 		tracker.mark_memory_pressure();
 	}
-	else if (pending_copies.size() >= MaxPendingCopiesWithoutFlush || stats.num_copy_threads >= MaxPendingCopyThreads)
-	{
-		// Deal with soft limits. We have to flush since our algorithms need it, not because of pressure.
+
+	// The copy limits hold under pressure too: the flush pressure asks for
+	// waits for a TEX0 write, and copies keep coming until then.
+	if (pending_copies.size() >= MaxPendingCopiesWithoutFlush || stats.num_copy_threads >= MaxPendingCopyThreads)
 		flush_transfer();
-	}
 }
 
 static VkDeviceSize align_offset(VkDeviceSize offset, VkDeviceSize align)
@@ -1192,8 +1276,15 @@ void GSRenderer::flush_submit(uint64_t value)
 			last_submitted_timeline = value;
 			timeline_cond.notify_all();
 		}
-		binary = device->request_timeline_semaphore_as_binary(*descriptor_timeline, next_descriptor_timeline_signal++);
-		device->submit_empty(Vulkan::CommandBuffer::Type::Generic, nullptr, binary.get());
+		// Only a pool exhausted since the last signal waits on this
+		// value; otherwise the signal, an empty queue submission of its
+		// own, says nothing anyone reads. The value stays until it does.
+		if (!exhausted_descriptor_pools.empty() &&
+		    exhausted_descriptor_pools.back().timeline == next_descriptor_timeline_signal)
+		{
+			binary = device->request_timeline_semaphore_as_binary(*descriptor_timeline, next_descriptor_timeline_signal++);
+			device->submit_empty(Vulkan::CommandBuffer::Type::Generic, nullptr, binary.get());
+		}
 	}
 
 	// This is a delayed sync-point between CPU and GPU, and garbage collection can happen here.
@@ -1435,8 +1526,8 @@ void GSRenderer::allocate_upload_indirection(TextureAnalysis &analysis, TextureU
 	upload.indirection.size = sizeof(uvec4) + num_blocks * sizeof(uvec2);
 	qword_clears.push_back(analysis.indirect_workgroups_va);
 
-	analysis.base = u16vec2(upload.desc.rect.x, upload.desc.rect.y);
-	analysis.size_minus_1 = uvec2(upload.desc.rect.width - 1, upload.desc.rect.height - 1);
+	analysis.base = u16vec2{ uint16_t(upload.desc.rect.x), uint16_t(upload.desc.rect.y) };
+	analysis.size_minus_1 = uvec2{ upload.desc.rect.width - 1u, upload.desc.rect.height - 1u };
 }
 
 void GSRenderer::commit_cached_texture(uint32_t tex_info_index, bool sampler_feedback)
@@ -1886,11 +1977,12 @@ bool GSRenderer::render_pass_instance_is_deduced_blur(const RenderPass &rp, uint
 		uint32_t tex_index = (buffers.prim[i].tex >> TEX_TEXTURE_INDEX_OFFSET) &
 		                     ((1 << TEX_TEXTURE_INDEX_BITS) - 1);
 
-		ivec2 phase = ivec2(buffers.attr[3 * i].uv) - buffers.pos[3 * i].pos;
+		ivec2 phase = ivec2{ int32_t(buffers.attr[3 * i].uv.x) - buffers.pos[3 * i].pos.x,
+		                     int32_t(buffers.attr[3 * i].uv.y) - buffers.pos[3 * i].pos.y };
 
 		if (last_tex_index == tex_index)
 		{
-			if (any(notEqual(phase_offset, phase)))
+			if (!pgs_ivec2_eq(&phase_offset, &phase))
 				return true;
 		}
 		else
@@ -1975,12 +2067,13 @@ void GSRenderer::dispatch_triangle_setup(Vulkan::CommandBuffer &cmd, const Rende
 	cmd.push_constants(&push, 0, sizeof(push));
 
 	cmd.set_program(shaders.triangle_setup);
-	cmd.set_specialization_constant_mask(0xf);
+	cmd.set_specialization_constant_mask(0x1f);
 	cmd.set_specialization_constant(0, sampling_rate_x_log2);
 	cmd.set_specialization_constant(1, sampling_rate_y_log2);
 	cmd.set_specialization_constant(2, bound_texture_has_array);
 
 	cmd.set_specialization_constant(3, bound_texture_has_array && allow_field_render);
+	cmd.set_specialization_constant(4, bound_texture_has_array && super_sampled_copies_only);
 
 	Vulkan::QueryPoolHandle start_ts, end_ts;
 	if (enable_timestamps)
@@ -2439,7 +2532,7 @@ void GSRenderer::dispatch_read_aliased_depth_passes(Vulkan::CommandBuffer &cmd, 
                                                     uint32_t base_primitive,
                                                     uint32_t next_lo_index, uint32_t num_primitives)
 {
-	auto bb = ivec4(INT_MAX, INT_MAX, INT_MIN, INT_MIN);
+	auto bb = ivec4{ INT_MAX, INT_MAX, INT_MIN, INT_MIN };
 
 	uint32_t half_gpu_size = buffers.gpu->get_create_info().size / 2;
 	if (get_bits_per_pixel(depth_psm) == 16)
@@ -2461,10 +2554,10 @@ void GSRenderer::dispatch_read_aliased_depth_passes(Vulkan::CommandBuffer &cmd, 
 
 		auto &prim_bb = buffers.prim[base_primitive + i].bb;
 
-		auto hazard_bb = ivec4(std::max<int>(bb.x, prim_bb.x),
+		auto hazard_bb = ivec4{std::max<int>(bb.x, prim_bb.x),
 		                       std::max<int>(bb.y, prim_bb.y),
 		                       std::min<int>(bb.z, prim_bb.z),
-		                       std::min<int>(bb.w, prim_bb.w));
+		                       std::min<int>(bb.w, prim_bb.w) };
 
 		bool overlap = hazard_bb.x <= hazard_bb.z && hazard_bb.y <= hazard_bb.w &&
 		               (state & ((1u << STATE_BIT_Z_TEST) | (1u << STATE_BIT_Z_WRITE))) != 0;
@@ -2481,15 +2574,15 @@ void GSRenderer::dispatch_read_aliased_depth_passes(Vulkan::CommandBuffer &cmd, 
 
 			next_lo_index = i;
 			overlap = false;
-			bb = ivec4(prim_bb);
+			bb = ivec4{ prim_bb.x, prim_bb.y, prim_bb.z, prim_bb.w };
 		}
 		else
 		{
 			// Expand the BB.
-			bb = ivec4(std::min<int>(bb.x, prim_bb.x),
+			bb = ivec4{std::min<int>(bb.x, prim_bb.x),
 			           std::min<int>(bb.y, prim_bb.y),
 			           std::max<int>(bb.z, prim_bb.z),
-			           std::max<int>(bb.w, prim_bb.w));
+			           std::max<int>(bb.w, prim_bb.w) };
 		}
 	}
 
@@ -2618,7 +2711,8 @@ void GSRenderer::dispatch_shading(Vulkan::CommandBuffer &cmd, const RenderPass &
 	assert(inst.sampling_rate_y_log2 <= 3);
 
 	cmd.set_program(shaders.ubershader[int(rp.feedback_color)][int(rp.feedback_depth)]);
-	auto snap_raster_mask = ivec2(-(1 << inst.sampling_rate_y_log2));
+	auto snap_raster_mask = ivec2{ -(1 << inst.sampling_rate_y_log2),
+	                               -(1 << inst.sampling_rate_y_log2) };
 	// Snap single-sampled raster to half-texel instead.
 	if (inst.sampling_rate_y_log2 && field_aware_super_sampling && render_pass_instance_might_field_render(rp, instance))
 		snap_raster_mask.y >>= 1;
@@ -2784,7 +2878,7 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd,
 			num_wgs = 0;
 		}
 
-		work_items[num_wgs++] = uvec4(group_x, group_y, transfer_id, 0);
+		work_items[num_wgs++] = uvec4{ group_x, group_y, transfer_id, 0u };
 	};
 
 	for (uint32_t i = 0; i < num_dispatches; i++)
@@ -2847,9 +2941,12 @@ void GSRenderer::emit_copy_vram(Vulkan::CommandBuffer &cmd,
 void GSRenderer::copy_vram(const CopyDescriptor &desc, const PageRect &damage_rect)
 {
 	Vulkan::BufferBlockAllocation alloc = {};
-	stats.num_copy_threads += desc.trxreg.desc.RRW * desc.trxreg.desc.RRH;
-	if (stats.num_copy_threads > MaxPendingCopyThreads)
+	// The copies already pending go first if this one would take them past
+	// the limit; its own threads count towards the next batch.
+	const uint32_t threads = desc.trxreg.desc.RRW * desc.trxreg.desc.RRH;
+	if (stats.num_copy_threads + threads > MaxPendingCopyThreads)
 		flush_transfer();
+	stats.num_copy_threads += threads;
 
 	if (desc.trxdir.desc.XDIR == HOST_TO_LOCAL)
 	{
@@ -4081,8 +4178,11 @@ void GSRenderer::sample_crtc_circuit(Vulkan::CommandBuffer &cmd, const Vulkan::I
                                      uint32_t scale_x_log2, uint32_t scale_y_log2, bool filtered,
                                      const Vulkan::Image *promoted)
 {
+	// A kept image was sampled by the previous merge; order that read
+	// before this write.
 	cmd.image_barrier(img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-	                  0, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+	                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+	                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
 	Vulkan::RenderPassInfo rp_info;
 	rp_info.num_color_attachments = 1;
@@ -4216,6 +4316,37 @@ bool GSRenderer::vsync_can_skip(const PrivRegisterState &priv, const VSyncInfo &
 	return !scanout_is_interlaced(priv, info);
 }
 
+Vulkan::ImageHandle GSRenderer::acquire_scanout_image(Vulkan::ImageHandle &slot, const Vulkan::ImageCreateInfo &info,
+                                                      std::vector<Vulkan::ImageHandle> *recycle)
+{
+	// The kept one first, then one the caller gave back, then a new one.
+	// Every user of these images starts from VK_IMAGE_LAYOUT_UNDEFINED, so
+	// whatever a reused image held is discarded, never read.
+	if (slot && slot->get_width() == info.width && slot->get_height() == info.height)
+		return slot;
+
+	slot.reset();
+
+	if (recycle)
+	{
+		for (size_t i = 0, n = recycle->size(); i < n; i++)
+		{
+			auto &img = (*recycle)[i];
+			if (img->get_width() == info.width && img->get_height() == info.height)
+			{
+				slot = std::move(img);
+				if (i + 1 != n)
+					img = std::move(recycle->back());
+				recycle->pop_back();
+				return slot;
+			}
+		}
+	}
+
+	slot = device->create_image(info);
+	return slot;
+}
+
 ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &info,
                                 uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2,
                                 const Vulkan::Image *promoted1, const Vulkan::Image *promoted2)
@@ -4288,22 +4419,35 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	                             priv.smode2.INT &&
 	                             priv.smode1.CMOD != SMODE1Bits::CMOD_PROGRESSIVE;
 
-	// The field-aware path pairs lines against fields: the vertical axis
-	// spends its sample bit on field reconstruction, so cap Y at the 2x
-	// line pairing. The horizontal axis is untouched by field logic and
-	// keeps the full factor -- field-rendered games get 4x width with
-	// field-doubled height.
-	if (field_aware_rendering && scanout_scale_y_log2 > 1)
+	// The field-aware path scans out one field at the frame's height: a
+	// field line spans two frame lines, so the vertical factor over the
+	// field is one step above the frame's, and the field's own vertical
+	// samples fill it (field rendering lays them at half-line steps). It
+	// takes as many as the grid has, one to an output row: 2x over the
+	// field is the frame at native height, 4x is the frame at twice its
+	// height, and 8x, which the full-field scanout asks for from the
+	// ordered 4x8 grid, the frame at four times its height. The sparse
+	// grid's vertical samples are not rows and keep 2x.
+	if (field_aware_rendering)
 	{
-		scanout_scale_y_log2 = 1;
+		uint32_t field_y_log2 = scanout_scale_x_log2 + 1;
+		if (field_y_log2 > sampling_rate_y_log2)
+			field_y_log2 = sampling_rate_y_log2;
+		if (field_y_log2 > (info.high_res_scanout_full_field ? 3u : 2u))
+			field_y_log2 = info.high_res_scanout_full_field ? 3u : 2u;
+		if (sampling_rate_y_log2 - sampling_rate_x_log2 == 2)
+			field_y_log2 = 1;
+		scanout_scale_y_log2 = field_y_log2;
 		high_resolution_scanout = scanout_scale_x_log2 > scanout_scale_y_log2 ?
 		                          scanout_scale_x_log2 : scanout_scale_y_log2;
 	}
 
 	// The tent reconstruction only makes sense where the grid is fully
-	// spent on resolution: the symmetric 4x case.
+	// spent on resolution: the symmetric 4x case, and the 4x8 grid at
+	// 4x, with or without the full field height.
 	bool scanout_filtered = info.high_res_scanout_filtered &&
-	                        scanout_scale_x_log2 == 2 && scanout_scale_y_log2 == 2;
+	                        scanout_scale_x_log2 == 2 &&
+	                        (scanout_scale_y_log2 == 2 || scanout_scale_y_log2 == 3);
 
 	uint32_t super_samples = 1;
 	if (high_resolution_scanout)
@@ -4640,7 +4784,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 				image_info.width <<= scanout_scale_x_log2;
 				image_info.height <<= scanout_scale_y_log2;
 			}
-			{ PROFILE_SCOPE(ZONE_GS_VS_CIRC); circuit1 = device->create_image(image_info); }
+			{ PROFILE_SCOPE(ZONE_GS_VS_CIRC); circuit1 = acquire_scanout_image(scanout_circuits[0], image_info, info.recycle); }
 			sample_crtc_circuit(cmd, *circuit1, priv.dispfb1, rect, super_samples,
 			                    scanout_scale_x_log2, scanout_scale_y_log2, scanout_filtered, promoted1);
 			device->set_name(*circuit1, "Circuit1");
@@ -4699,7 +4843,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 				image_info.width <<= scanout_scale_x_log2;
 				image_info.height <<= scanout_scale_y_log2;
 			}
-			{ PROFILE_SCOPE(ZONE_GS_VS_CIRC); circuit2 = device->create_image(image_info); }
+			{ PROFILE_SCOPE(ZONE_GS_VS_CIRC); circuit2 = acquire_scanout_image(scanout_circuits[1], image_info, info.recycle); }
 			sample_crtc_circuit(cmd, *circuit2, priv.dispfb2, rect, super_samples,
 			                    scanout_scale_x_log2, scanout_scale_y_log2, scanout_filtered, promoted2);
 			device->set_name(*circuit2, "Circuit2");
@@ -4819,9 +4963,15 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 				circuit2->get_width() <= effective_mode_width && circuit2->get_height() <= effective_mode_height;
 
 		if (is_raw_circuit1)
+		{
 			result.image = std::move(circuit1);
+			scanout_circuits[0].reset();
+		}
 		else if (is_raw_circuit2)
+		{
 			result.image = std::move(circuit2);
+			scanout_circuits[1].reset();
+		}
 
 		if (result.image)
 		{
@@ -4847,8 +4997,9 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 
 	if (field_aware_rendering)
 	{
-		// Avoid a one line flicker due to field rendering.
-		image_info.height--;
+		// Avoid a one line flicker due to field rendering: half a field
+		// line, the offset between the two fields.
+		image_info.height -= 1u << (scanout_scale_y_log2 - 1);
 	}
 
 	PROFILE_SCOPE(ZONE_GS_VS_MERGE);
@@ -4857,10 +5008,19 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	// 3-6x more in a game drawing almost nothing (FFX-2, 532-927 us/call) than
 	// in one drawing a great deal (NFSU2, 144-180 us/call), which is the shape
 	// of a wait or an allocator miss rather than work.
+	// With deinterlacing the merged field stays here, in the field ring,
+	// and the deinterlaced image is what goes to the caller; otherwise the
+	// merged image itself does, and the caller offers it back once done.
+	const bool should_deinterlace = !high_resolution_scanout && (is_interlaced || force_deinterlace);
+	const bool will_deinterlace = !info.skip_deinterlace && should_deinterlace;
+
 	Vulkan::ImageHandle merged;
 	{
 		PROFILE_SCOPE(ZONE_GS_VS_IMG);
-		merged = device->create_image(image_info);
+		if (will_deinterlace)
+			merged = acquire_scanout_image(scanout_field_spare, image_info, nullptr);
+		else
+			acquire_scanout_image(merged, image_info, info.recycle);
 	}
 
 	device->set_name(*merged, "Merged field");
@@ -4881,8 +5041,10 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	}
 
+	// A field taken back from the ring was sampled by the previous
+	// deinterlace; order that read before this write.
 	cmd.image_barrier(*merged, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
-	                  0, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+	                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 	                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT);
 
 	// Execution barrier so that we don't render to VRAM before we're done sampling.
@@ -4932,7 +5094,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 				vp.height *= hrs_scale_y;
 
 				if (field_aware_rendering && !info.phase)
-					vp.y -= 1.0f;
+					vp.y -= float(1u << (scanout_scale_y_log2 - 1));
 			}
 
 			cmd.set_viewport(vp);
@@ -4967,7 +5129,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 				vp.height *= hrs_scale_y;
 
 				if (field_aware_rendering && !info.phase)
-					vp.y -= 1.0f;
+					vp.y -= float(1u << (scanout_scale_y_log2 - 1));
 			}
 
 			cmd.set_viewport(vp);
@@ -5084,7 +5246,8 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 			tracker.mark_external_write(write_rect);
 
 			// TODO: Consider SX, SY.
-			push.uv_base = vec2(0.5f) / vec2(push.resolution);
+			push.uv_base = vec2{ 0.5f / float(push.resolution.x),
+			                     0.5f / float(push.resolution.y) };
 			push.uv_scale.x = float(priv.extdata.SMPH + 1) / float(scanout_width * clock_divider);
 			push.uv_scale.y = float(priv.extdata.SMPV + 1) / float(scanout_height);
 			cmd.push_constants(&push, 0, sizeof(push));
@@ -5109,10 +5272,19 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 		}
 	}
 
-	bool should_deinterlace = !high_resolution_scanout && (is_interlaced || force_deinterlace);
-
-	if (!info.skip_deinterlace && should_deinterlace)
+	if (will_deinterlace)
 	{
+		// The field leaving the ring is next frame's merged image, unless
+		// the ring still holds it under another index (the hole filling
+		// below aliases the first frames).
+		scanout_field_spare.reset();
+		if (vsync_last_fields[3] &&
+		    vsync_last_fields[3] != vsync_last_fields[2] &&
+		    vsync_last_fields[3] != vsync_last_fields[1] &&
+		    vsync_last_fields[3] != vsync_last_fields[0])
+		{
+			scanout_field_spare = std::move(vsync_last_fields[3]);
+		}
 		for (int i = 3; i >= 1; i--)
 			vsync_last_fields[i] = std::move(vsync_last_fields[i - 1]);
 		vsync_last_fields[0] = std::move(merged);
@@ -5132,6 +5304,7 @@ ScanoutResult GSRenderer::vsync(const PrivRegisterState &priv, const VSyncInfo &
 	{
 		for (auto &field : vsync_last_fields)
 			field.reset();
+		scanout_field_spare.reset();
 	}
 
 	cmd.end_region();
@@ -5159,7 +5332,8 @@ Vulkan::ImageHandle GSRenderer::fastmad_deinterlace(Vulkan::CommandBuffer &cmd, 
 	image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 	image_info.misc |= Vulkan::IMAGE_MISC_MUTABLE_SRGB_BIT;
 
-	auto deinterlaced = device->create_image(image_info);
+	Vulkan::ImageHandle deinterlaced;
+	acquire_scanout_image(deinterlaced, image_info, vsync.recycle);
 	device->set_name(*deinterlaced, "Deinterlaced");
 
 	cmd.image_barrier(*deinterlaced, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,

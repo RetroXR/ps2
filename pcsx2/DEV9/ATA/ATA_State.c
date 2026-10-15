@@ -127,18 +127,16 @@ int ata_open(ata_state_t* ata, const char* hddPath, uint64_t size_sectors)
 
 	ata_write_queue_init(&ata->writeQueue);
 
-	ata->ioMutex = slock_new();
-	ata->ioThreadIdle_cv = scond_new();
-	ata->ioReady = scond_new();
-	if (!ata->ioMutex || !ata->ioThreadIdle_cv || !ata->ioReady)
+	if (!retro_eventcount_init(&ata->ioReadyEc) || !retro_eventcount_init(&ata->ioIdleEc))
 		return -1;
 
-	slock_lock(ata->ioMutex);
-	ata->ioRead = false;
-	ata->ioWrite = false;
-	slock_unlock(ata->ioMutex);
-
 	retro_atomic_int_init(&ata->ioClose, 0);
+	retro_atomic_int_init(&ata->ioRead, 0);
+	retro_atomic_int_init(&ata->ioWrite, 0);
+	retro_atomic_int_init(&ata->ioThreadIdle, 0);
+	retro_atomic_int_init(&ata->ioWriteFailed, 0);
+	ata->ioReadFailed  = false;
+	ata->ioErrorLogged = false;
 
 	ata->ioThread = sthread_create(ata_io_thread_entry, ata);
 	if (!ata->ioThread)
@@ -181,10 +179,7 @@ void ata_close(ata_state_t* ata)
 	if (ata->ioRunning)
 	{
 		retro_atomic_store_release_int(&ata->ioClose, 1);
-		slock_lock(ata->ioMutex);
-		ata->ioWrite = true;
-		slock_unlock(ata->ioMutex);
-		scond_broadcast(ata->ioReady);
+		ata_io_request(ata, &ata->ioWrite);
 
 		sthread_join(ata->ioThread);
 		ata->ioThread = NULL;
@@ -199,21 +194,8 @@ void ata_close(ata_state_t* ata)
 	}
 	ata_write_queue_destroy(&ata->writeQueue);
 
-	if (ata->ioMutex)
-	{
-		slock_free(ata->ioMutex);
-		ata->ioMutex = NULL;
-	}
-	if (ata->ioThreadIdle_cv)
-	{
-		scond_free(ata->ioThreadIdle_cv);
-		ata->ioThreadIdle_cv = NULL;
-	}
-	if (ata->ioReady)
-	{
-		scond_free(ata->ioReady);
-		ata->ioReady = NULL;
-	}
+	retro_eventcount_free(&ata->ioReadyEc);
+	retro_eventcount_free(&ata->ioIdleEc);
 
 	/* Close File Handle */
 	if (ata->hddSparse)
@@ -386,32 +368,32 @@ void ata_async(ata_state_t* ata, uint32_t cycles)
 	if ((ata->regStatus & (ATA_STAT_BUSY | ATA_STAT_DRQ)) == 0 ||
 		ata->awaitFlush || (ata->waitingCmd != NULL))
 	{
-		slock_lock(ata->ioMutex);
-		if (ata->ioRead || ata->ioWrite)
-		{
-			/* IO Running */
-			slock_unlock(ata->ioMutex);
-			return;
-		}
-		slock_unlock(ata->ioMutex);
+		if (retro_atomic_load_acquire_int(&ata->ioRead)
+			| retro_atomic_load_acquire_int(&ata->ioWrite))
+			return; /* IO Running */
 
 		/* Note, ioThread may still be working. */
 		if (ata->waitingCmd != NULL) /* Are we waiting to continue a command? */
 		{
 			ata_cmd_fn cmd = ata->waitingCmd;
 			ata->waitingCmd = NULL;
-			cmd(ata);
+			if (ata->ioReadFailed)
+				ata_hdd_read_failed(ata);
+			else
+				cmd(ata);
 		}
 		else if (!ata_write_queue_is_empty(&ata->writeQueue)) /* Flush cache */
-		{
-			slock_lock(ata->ioMutex);
-			ata->ioWrite = true;
-			slock_unlock(ata->ioMutex);
-			scond_broadcast(ata->ioReady);
-		}
+			ata_io_request(ata, &ata->ioWrite);
 		else if (ata->awaitFlush) /* Fire IRQ on flush completion? */
 		{
 			ata->awaitFlush = false;
+			/* A write the host failed since the last flush is this
+			 * flush's error: the data did not reach the image. */
+			if (retro_atomic_exchange_int(&ata->ioWriteFailed, 0))
+			{
+				ata->regStatus |= (uint8_t)(ATA_STAT_ERR | ATA_STAT_WRERR);
+				ata->regError  |= (uint8_t)ATA_ERR_ABORT;
+			}
 			ata_post_cmd_no_data(ata);
 		}
 	}

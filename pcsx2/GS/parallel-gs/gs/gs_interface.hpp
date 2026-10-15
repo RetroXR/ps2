@@ -11,9 +11,13 @@
 #include "device.hpp"
 #include "intrusive_hash_map.hpp"
 #include "dynamic_array.hpp"
+#include "gs_util.hpp"
 #include <stddef.h>
 #include <vector>
 #include <type_traits>
+
+/* Vertex-kick kernels; plain C, so it goes in ahead of the namespace. */
+#include "pgs_vertex_kernels.h"
 
 namespace ParallelGS
 {
@@ -184,6 +188,11 @@ struct VSyncInfo
 	// This will look funny if the game is constantly changing vertical scanout resolution.
 	bool raw_circuit_scanout;
 
+	// Images the caller has finished with, offered back: the scanout result
+	// is rendered into one of these when its size matches, instead of a fresh
+	// image every frame. Taken ones are removed from the list.
+	std::vector<Vulkan::ImageHandle> *recycle = nullptr;
+
 	// When using SSAA, attempt to scan out a higher resolution image based on the super samples.
 	// This only works well if the game is rendering 3D geometry directly to the frame buffer which is used to scanout.
 	// Some games blit the real framebuffer to scanout location using textures, which will lose the SSAA information necessary to scanout,
@@ -198,6 +207,11 @@ struct VSyncInfo
 	// texture anti-aliasing at full resolution, for about half a pixel
 	// of softness. Ignored below 4x.
 	bool high_res_scanout_filtered;
+	// A field-rendered game at 4x takes every row of samples its field
+	// lines carry, up to the frame at four times its height, instead of
+	// stopping at twice. Needs a grid with eight rows of samples per
+	// pixel; on a smaller grid the scanout is what that grid gives.
+	bool high_res_scanout_full_field;
 
 	// If using interlaced, defer any attempt to deinterlace and just return the raw output as-is with phase information.
 	// User is responsible for deinterlacing in whatever way is appropriate.
@@ -402,7 +416,7 @@ private:
 		// Important optimization for some games which use FRAME register to do viewport shifts.
 		struct Instance
 		{
-			ivec4 bb = ivec4(INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN);
+			ivec4 bb = { INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN };
 			Reg64<FRAMEBits> frame = {};
 			Reg64<ZBUFBits> zbuf = {};
 			uint32_t color_write_mask = 0;
@@ -446,7 +460,7 @@ private:
 		bool has_optimized_short_term_texture_caching = false;
 		bool field_aware_rendering = false;
 
-		ivec3 last_triangle_parallelogram_order;
+		PrimOrder last_triangle_parallelogram_order;
 
 		uint32_t feedback_psm = 0;
 		uint32_t feedback_cpsm = 0;
@@ -487,6 +501,7 @@ private:
 	template <int CTX> void a_d_TEX2(uint64_t payload);
 
 	void shift_vertex_queue();
+	void gather_kick_regs(::pgs_kick_regs &g) const;
 	void vertex_kick_xyz(Reg64<XYZBits> xyz);
 	void vertex_kick_xyzf(Reg64<XYZFBits> xyzf);
 	template <bool ADC> void packed_XYZF(const void *words);
@@ -536,6 +551,14 @@ private:
 	struct StateTracker
 	{
 		PrimitiveTemplate prim_template = {};
+
+		/* The per-primitive record with everything a state change decides
+		 * already in place; a kick copies it and fills in the bits that
+		 * belong to the primitive itself. Rebuilt with prim_template, so
+		 * every register it reads must dirty STATE_DIRTY_PRIM_TEMPLATE_BIT:
+		 * FRAME, ALPHA, TEST and FOGCOL for both contexts, and PRIM when it
+		 * switches context. */
+		PrimitiveAttribute prim_attr_base = {};
 		StateDirtyFlags dirty_flags = STATE_DIRTY_ALL_BITS;
 		bool degenerate_draw = false;
 
@@ -598,12 +621,23 @@ private:
 	void drawing_kick_invalid(bool);
 	void post_draw_kick_handler();
 
+	/* A sliding window of at most three vertices. Strips move the window by
+	 * one on every kick, so the window is addressed through a rolling head
+	 * and the entries that stay live are never copied. One slot spare keeps
+	 * the wrap a mask rather than a compare. */
 	struct
 	{
-		enum { MaxEntries = 3 };
+		enum { MaxEntries = 4 };
 		VertexPosition pos[MaxEntries];
 		VertexAttribute attr[MaxEntries];
 		unsigned count = 0;
+		unsigned head = 0;
+
+		/* Slot holding the i'th oldest live vertex. */
+		unsigned slot(unsigned i) const
+		{
+			return (head + i) & (MaxEntries - 1);
+		}
 	} vertex_queue;
 
 	void handle_tex0_write(uint32_t ctx);
@@ -624,6 +658,10 @@ private:
 	uint32_t sampling_rate_x_log2 = 0;
 	uint32_t sampling_rate_y_log2 = 0;
 	bool super_sampled_textures = false;
+	/* Super-sampled textures read per sample only where a sprite copies
+	 * texel for pixel; the rest read single-sampled. On whenever super
+	 * sampling is and the full per-sample textures are not. */
+	bool super_sampled_copies = false;
 
 	void reset_context_state_registers();
 

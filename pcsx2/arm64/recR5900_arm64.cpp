@@ -45,6 +45,7 @@
 #include "arm64/AsmHelpers.h"
 #include "arm64/aR5900Analysis.h"
 #include "VUmicro.h" // _vu0FinishMicro
+#include "../Config.h"
 // vu0Sync() lives in VU0.cpp with no header declaration (the interpreter ops call
 // it from the same TU); the C.58 COP2 transfers need it by address.
 extern void vu0Sync();
@@ -189,7 +190,7 @@ namespace
 
 	inline u32  Norm(u32 a)  { return a & 0x1fffffff; }
 	inline bool InRam(u32 np) { return np < kRamBytes; }
-	inline void LutClearAll() { if (s_lut) madvise(s_lut, (size_t)kRamWords * sizeof(BlockFn), MADV_DONTNEED); }
+	inline void LutClearAll() { if (s_lut) memzero_pages(s_lut, (size_t)kRamWords * sizeof(BlockFn)); }
 
 	// C.46: the whole cpuRegisters struct sits within the ldr/str immediate
 	// window of the guest-reg base already pinned in x19, so reach its fields
@@ -207,15 +208,23 @@ namespace
 
 	bool VixlEmitSelfTest()
 	{
-		MacroAssembler masm;
-		masm.Add(x0, x0, 1);
-		masm.Ret();
-		masm.FinalizeCode();
-		vixl::CodeBuffer* buf = masm.GetBuffer();
-		buf->SetExecutable();
-		auto fn = buf->GetStartAddress<int64_t (*)(int64_t)>();
-		const int64_t r = fn(41);
-		buf->SetWritable();
+		// Emit into a real code page: VIXL's own buffer is malloc'd on Darwin
+		// (VIXL_CODE_BUFFER_MALLOC), where SetExecutable() is a no-op.
+		constexpr size_t kPage = 16384;
+		u8* page = (u8*)memjit_alloc(kPage);
+		if (!page)
+			return false;
+		memjit_write_begin();
+		{
+			MacroAssembler masm(page, kPage, PositionDependentCode);
+			masm.Add(x0, x0, 1);
+			masm.Ret();
+			masm.FinalizeCode();
+		}
+		memjit_write_end();
+		memsync(page, page + 8);
+		const int64_t r = reinterpret_cast<int64_t (*)(int64_t)>(page)(41);
+		memjit_free(page, kPage);
 		return r == 42;
 	}
 
@@ -3575,9 +3584,9 @@ namespace {
 		{
 			s_exit_labels.emplace_back();
 			Label* slow = &s_exit_labels.back();
-			m.Ldr(w0, RegsField(&cpuRegs.cycle));
-			m.Ldr(w1, RegsField(&cpuRegs.nextEventCycle));
-			m.Subs(w0, w0, w1);   // (s32)(cycle - nextEventCycle)
+			m.Ldr(x0, RegsField(&cpuRegs.cycle));
+			m.Ldr(x1, RegsField(&cpuRegs.nextEventCycle));
+			m.Subs(x0, x0, x1);   // (s64)(cycle - nextEventCycle)
 			m.B(slow, pl);        // event due -> out-of-line stub
 			s_exit_pending.push_back({slow, evt});
 		}
@@ -3727,9 +3736,11 @@ namespace {
 		m.Lsr(w2, w0, 3);
 		m.Cmp(w2, 0);
 		m.Csinc(w2, w2, wzr, ne); // max(1, bc >> 3)
-		m.Ldr(w3, RegsField(&cpuRegs.cycle));
-		m.Add(w3, w3, w2);
-		m.Str(w3, RegsField(&cpuRegs.cycle));
+		// cpuRegs.cycle is 64 bits wide; the add has to carry out of the
+		// low word or the clock steps back 2^32 cycles when it crosses it.
+		m.Ldr(x3, RegsField(&cpuRegs.cycle));
+		m.Add(x3, x3, Operand(w2, UXTW));
+		m.Str(x3, RegsField(&cpuRegs.cycle));
 		m.And(w0, w0, 7);
 		m.Str(w0, MemOperand(x10));
 		m.B(&done);
@@ -3866,9 +3877,9 @@ namespace {
 		const auto EmitEventTest = [&m, evt]()
 		{
 			Label skip;
-			m.Ldr(w0, RegsField(&cpuRegs.cycle));
-			m.Ldr(w1, RegsField(&cpuRegs.nextEventCycle));
-			m.Subs(w0, w0, w1); // (s32)(cycle - nextEventCycle)
+			m.Ldr(x0, RegsField(&cpuRegs.cycle));
+			m.Ldr(x1, RegsField(&cpuRegs.nextEventCycle));
+			m.Subs(x0, x0, x1); // (s64)(cycle - nextEventCycle)
 			m.B(&skip, mi);     // not due yet
 			m.Mov(x16, evt);
 			m.Blr(x16);
@@ -3882,33 +3893,32 @@ namespace {
 		// at runtime so settings changes need no block flush.
 
 		// WaitLoop speedhack for the EE kernel idle loop at 0x81fc0 (6 nops +
-		// `beq zero,zero,-6`): the interpreter fast-forwards cpuRegs.cycle to
-		// nextEventCycle when spinning there (_doBranch_shared, gated on
-		// Cpu==&intCpu so the JIT never benefited). Mirror it on the taken
-		// path: after the cycle flush (upd), before the event test, do
-		// `if (nextEventCycle != cycle) cycle = nextEventCycle` -- the next
-		// event then fires immediately instead of burning host time emulating
-		// millions of idle iterations. Same effect as the interpreter's
-		// `(s64)(u32(nev-cyc)) > 0` condition (true iff the u32s differ).
+		// `beq zero,zero,-6`): on the taken path, after the cycle flush and
+		// before the event test, cycle = max(cycle, nextEventCycle) -- the
+		// x86 recompiler's rule. The next event then fires immediately instead
+		// of burning host time emulating millions of idle iterations. An event
+		// that is already overdue leaves the clock alone: the clock never runs
+		// backwards, since the counters derive their counts from the distance
+		// between it and the cycle they last synced at.
 		const bool idle_skip = EmuConfig.Speedhacks.WaitLoop && !is_jr
 			&& ((tconst & 0x1fffffff) == 0x00081fc0);
 		const auto EmitIdleSkip = [&m]()
 		{
-			Label skip;
-			m.Ldr(w0, RegsField(&cpuRegs.cycle));
-			m.Ldr(w1, RegsField(&cpuRegs.nextEventCycle));
-			m.Cmp(w1, w0);
-			m.B(&skip, eq);
-			m.Str(w1, RegsField(&cpuRegs.cycle)); // cycle = nextEventCycle
-			m.Bind(&skip);
+			m.Ldr(x0, RegsField(&cpuRegs.cycle));
+			m.Ldr(x1, RegsField(&cpuRegs.nextEventCycle));
+			m.Cmp(x1, x0);
+			m.Csel(x0, x1, x0, gt); // (s64)(nextEventCycle - cycle) > 0
+			m.Str(x0, RegsField(&cpuRegs.cycle));
 		};
 
+		// JR/JALR target first: `jalr rd, rs` with rd == rs jumps to the old
+		// rs (JALR() in Interpreter.cpp reads it before _SetLink).
+		if (is_jr) LoadGpr(m, x20, gpr, rs);
 		// Link value is ZERO-extended to match the interpreter's _SetLink
 		// (R5900.h: UD[0] = u32 pc+4) -- NOT sign-extended as real MIPS64 would.
 		// Kernel return addresses (0x8xxxxxxx) otherwise get 0xffffffff upper
 		// halves that the interpreter path never produces.
 		if (link > 0) { m.Mov(w0, bpc + 8); StoreGpr(m, x0, gpr, (u32)link); }
-		if (is_jr) LoadGpr(m, x20, gpr, rs);
 
 		if (uncond)
 		{
@@ -4041,13 +4051,13 @@ namespace {
 		m.Str(w0, RegsField(&cpuRegs.CP0.n.Status));
 		// if ((int)(nextEventCycle - cycle) > 4) nextEventCycle = cycle + 4
 		Label no_pull;
-		m.Ldr(w0, RegsField(&cpuRegs.cycle));
-		m.Ldr(w1, RegsField(&cpuRegs.nextEventCycle));
+		m.Ldr(x0, RegsField(&cpuRegs.cycle));
+		m.Ldr(x1, RegsField(&cpuRegs.nextEventCycle));
 		m.Sub(w2, w1, w0);
 		m.Cmp(w2, 4);
 		m.B(&no_pull, le);
-		m.Add(w0, w0, 4);
-		m.Str(w0, RegsField(&cpuRegs.nextEventCycle));
+		m.Add(x0, x0, 4);
+		m.Str(x0, RegsField(&cpuRegs.nextEventCycle));
 		m.Bind(&no_pull);
 		s_rc.FlushDirty(m, gpr); // block exit: the next block reads GPR memory
 		// NO cycle flush and NO event test here -- mirror the interpreter
@@ -4127,6 +4137,7 @@ namespace {
 		s_exit_labels.clear();
 		s_exit_labels.emplace_back();
 		s_blk_ret = &s_exit_labels.front(); // the block's one return tail
+		memjit_write_begin(); // W^X: code cache writable on this thread until FinalizeCode
 		MacroAssembler masm(start, kCodeCacheSize - s_code_pos, PositionDependentCode);
 		// The aVU macro emitters (C.30-2) hold RSCRATCHADDR (x17) and q31 across
 		// vixl macro expansions -- keep the assembler from synthesizing into them
@@ -4267,6 +4278,7 @@ namespace {
 		EmitMisalignStubs(masm, gpr); // C.53: same, for the misalign cancels
 		EmitExitStubs(masm);          // C.54: event-due tails + the block's single return path
 		masm.FinalizeCode();
+		memjit_write_end();
 
 		const size_t sz = masm.GetSizeOfCodeGenerated();
 		memsync(reinterpret_cast<void*>(start), (u8*)(reinterpret_cast<void*>(start)) + (sz));
@@ -4385,9 +4397,7 @@ void eeJitReserve_arm64(void)
 	s_ok = VixlEmitSelfTest();
 	if (!s_code)
 	{
-		s_code = (u8*)mmap(nullptr, kCodeCacheSize, PROT_READ | PROT_WRITE | PROT_EXEC,
-		                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-		if (s_code == MAP_FAILED) s_code = nullptr;
+		s_code = (u8*)memjit_alloc(kCodeCacheSize);
 	}
 	if (!s_lut)
 	{
@@ -4447,7 +4457,7 @@ void eeJitShutdown_arm64(void)
 {
 	s_blocks.clear();
 	s_page.clear();
-	if (s_code) { munmap(s_code, kCodeCacheSize); s_code = nullptr; }
+	if (s_code) { memjit_free(s_code, kCodeCacheSize); s_code = nullptr; }
 	if (s_lut) { munmap(s_lut, (size_t)kRamWords * sizeof(BlockFn)); s_lut = nullptr; }
 	s_code_pos = 0;
 }
@@ -4480,7 +4490,9 @@ extern "C" bool eeFastmemFault_arm64(uintptr_t code_address)
 		return false; // out of B range -- impossible within one block, but don't corrupt code
 
 	u32* const insn = reinterpret_cast<u32*>(site.code);
+	memjit_write_begin();
 	*insn = 0x14000000u | (static_cast<u32>(delta) & 0x03ffffffu); // B <stub>
+	memjit_write_end();
 	memsync(insn, (u8*)(insn) + (sizeof(u32)));
 
 	const auto it = std::lower_bound(s_fm_faulting.begin(), s_fm_faulting.end(), site.pc);

@@ -96,7 +96,6 @@ endif()
 set(pcsx2Sources
 	Cache.cpp
 	COP0.cpp
-	COP2.cpp
 	Counters.cpp
 	Dmac.cpp
 	GameDatabase.cpp
@@ -106,6 +105,11 @@ set(pcsx2Sources
 	FiFo.cpp
 	FPU.cpp
 	ps2float.c
+	IopGte.c
+	COP2.c
+	Sif.c
+	SaveStateBase.c
+	SaveStateFreeze.c
 	Gif.cpp
 	Gif_Unit.cpp
 	GS.cpp
@@ -115,13 +119,13 @@ set(pcsx2Sources
 	IopBios.cpp
 	IopCounters.cpp
 	IopDma.cpp
-	IopGte.cpp
 	IopHw.cpp
 	IopIrq.cpp
 	IopMem.cpp
 	Mdec.cpp
 	Memory.cpp
 	MemoryCardFile.cpp
+	memcard_ecc.c
 	MemoryCardProtocol.cpp
 	MMI.cpp
 	MTGS.cpp
@@ -138,8 +142,6 @@ set(pcsx2Sources
 	R5900.cpp
 	R5900OpcodeImpl.cpp
 	R5900OpcodeTables.cpp
-	SaveState.cpp
-	Sif.cpp
 	Sif0.cpp
 	Sif1.cpp
 	sif2.cpp
@@ -191,6 +193,7 @@ set(pcsx2Headers
 	MTVU.h
 	Memory.h
 	MemoryCardFile.h
+	memcard_ecc.h
 	MemoryCardProtocol.h
 	MemoryTypes.h
 	MultitapProtocol.h
@@ -202,6 +205,7 @@ set(pcsx2Headers
 	R3000A.h
 	R5900.h
 	R5900OpcodeTables.h
+	FreezeTypes.h
 	SaveState.h
 	ShaderCacheVersion.h
 	Sif.h
@@ -263,23 +267,21 @@ set(pcsx2CDVDHeaders
 
 # SPU2 sources
 set(pcsx2SPU2Sources
-	SPU2/ADSR.cpp
-	SPU2/Dma.cpp
-	SPU2/Mixer.cpp
-	SPU2/spu2.cpp
-	SPU2/ReadInput.cpp
-	SPU2/RegTable.cpp
-	SPU2/Reverb.cpp
-	SPU2/spu2freeze.cpp
-	SPU2/spu2sys.cpp
+	SPU2/ADSR.c
+	SPU2/Dma.c
+	SPU2/Mixer.c
+	SPU2/ReadInput.c
+	SPU2/RegTable.c
+	SPU2/Reverb.c
+	SPU2/ReverbResample.c
+	SPU2/spu2.c
+	SPU2/spu2freeze.c
+	SPU2/spu2sys.c
 )
 
-# SPU2 sources that use the MULTI_ISA per-ISA namespace machinery and must be
-# compiled once per ISA (sse4/avx/avx2) when DISABLE_ADVANCE_SIMD is on, not
-# as a shared TU. Matches upstream's pcsx2SPU2SourcesUnshared.
-set(pcsx2SPU2SourcesUnshared
-	SPU2/ReverbResample.cpp
-)
+# No SPU2 source needs the MULTI_ISA per-ISA machinery: the reverb
+# resampler is one 128-bit path, built once like the rest of SPU2.
+set(pcsx2SPU2SourcesUnshared)
 
 # SPU2 headers
 set(pcsx2SPU2Headers
@@ -355,6 +357,16 @@ set(pcsx2GSSources
 	GS/Renderers/HW/GSObjectPool.c
 	GS/Renderers/HW/GSHashTable.c
 	GS/Renderers/HW/GSHashTable.h
+	GS/Renderers/HW/GSSpriteSnap.c
+	GS/Renderers/HW/GSSpriteSnap.h
+	GS/Renderers/HW/GSTargetBudget.c
+	GS/Renderers/HW/GSTargetBudget.h
+	GS/Renderers/Common/GSStableGroup.c
+	GS/Renderers/Common/GSStableGroup.h
+	GS/Renderers/Common/GSRetireRing.c
+	GS/Renderers/Common/GSRetireRing.h
+	GS/Renderers/HW/GSScratch.c
+	GS/Renderers/HW/GSScratch.h
 	GS/Renderers/Vulkan/GSVulkanHeap.c
 	GS/Renderers/Vulkan/GSVulkanHeap.h
 	GS/Renderers/HW/GSObjectPool.h
@@ -362,6 +374,8 @@ set(pcsx2GSSources
 	GS/Renderers/HW/GSTextureReplacementLoaders.cpp
 	GS/Renderers/HW/GSTextureReplacements.cpp
 	GS/Renderers/SW/GSDeviceSW.cpp
+	GS/Renderers/SW/GSHiresMem.c
+	GS/Renderers/SW/GSHiresMem.h
 	GS/Renderers/SW/GSTextureCacheSW.cpp
 	GS/Renderers/SW/GSTextureSW.cpp
 	)
@@ -395,6 +409,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSRenderer.h
 	GS/Renderers/Common/GSTexture.h
 	GS/Renderers/Common/GSVertex.h
+	GS/Renderers/Common/gs_vertex.h
 	GS/Renderers/Common/GSVertexTrace.h
 	GS/Renderers/HW/GSHwHack.h
 	GS/Renderers/HW/GSRendererHW.h
@@ -515,13 +530,15 @@ endif()
 set(pcsx2IPUSources
 	IPU/IPU.cpp
 	IPU/IPU_Fifo.cpp
+	IPU/IPUdither.c
+	IPU/ipu_csc.c
+	IPU/ipu_idct.c
 	IPU/IPUdma.cpp
+	IPU/yuv2rgb.c
 )
 
 set(pcsx2IPUSourcesUnshared
 	IPU/IPU_MultiISA.cpp
-	IPU/IPUdither.cpp
-	IPU/yuv2rgb.cpp
 )
 
 # IPU headers
@@ -534,6 +551,12 @@ set(pcsx2IPUHeaders
 	IPU/ipu_dct_lut.h
 	IPU/ipu_vlc.h
 	IPU/ipu_vlc_codes.h
+	IPU/ipu_bitstream.h
+	IPU/ipu_bp.h
+	IPU/ipu_csc.h
+	IPU/ipu_decoder.h
+	IPU/ipu_status.h
+	IPU/ipu_idct.h
 	IPU/yuv2rgb.h
 )
 
@@ -795,6 +818,8 @@ set(pcsx2USBSources
 	USB/libretro-usb/usb-guncon2.cpp
 	USB/libretro-usb/usb-hid.cpp
 	USB/libretro-usb/usb-ohci.cpp
+	USB/libretro-usb/ohci_dma.c
+	USB/libretro-usb/ohci_dma.h
 	USB/shared/ringbuffer.cpp
 )
 set(pcsx2USBHeaders
@@ -956,6 +981,8 @@ target_link_libraries(PCSX2_FLAGS INTERFACE
 	${LIBC_LIBRARIES}
 )
 
+# Outside Windows there is nothing to link for GL: the renderer gets its
+# entry points from the frontend.
 if(WIN32)
 	target_link_libraries(PCSX2_FLAGS INTERFACE
 		d3dcompiler.lib
@@ -964,12 +991,6 @@ if(WIN32)
 		dxgi.lib
 		opengl32.lib
 		OneCore.lib
-	)
-elseif(APPLE OR ANDROID OR WEBOS)
-	# Nothing to link: these get their GL entry points from the frontend.
-else()
-	target_link_libraries(PCSX2_FLAGS INTERFACE
-		OpenGL::GL
 	)
 endif()
 

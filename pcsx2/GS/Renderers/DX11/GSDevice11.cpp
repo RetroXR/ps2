@@ -735,9 +735,9 @@ GSTexture* GSDevice11::CreateSurface(GSTexture::Type type, int width, int height
 	return new GSTexture11(std::move(texture), desc, type, format);
 }
 
-std::unique_ptr<GSDownloadTexture> GSDevice11::CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format)
+GSDownloadTexturePtr GSDevice11::CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format)
 {
-	return GSDownloadTexture11::Create(width, height, format);
+	return GSDownloadTexturePtr(GSDownloadTexture11::Create(width, height, format).release());
 }
 
 void GSDevice11::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
@@ -991,19 +991,20 @@ void GSDevice11::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 	gs_d3d11_context_begin();
 }
 
-void GSDevice11::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
+void GSDevice11::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize, u32 samples)
 {
 	// match merge cb
 	struct Uniforms
 	{
 		float scale;
-		float pad1[3];
+		float samples; // BGColor.y
+		float pad1[2];
 		u32 offsetX, offsetY, dOffset;
 	};
-	const Uniforms cb = {sScale, {}, offsetX, offsetY, dOffset};
+	const Uniforms cb = {sScale, static_cast<float>(samples), {}, offsetX, offsetY, dOffset};
 	m_ctx->UpdateSubresource(m_merge.cb.get(), 0, nullptr, &cb, 0, 0);
 
-	const GSVector4 dRect(0, 0, dSize, 1);
+	const GSVector4 dRect(0, 0, dSize * samples, samples);
 	const ShaderConvert shader = (dSize == 16) ? ShaderConvert::CLUT_4 : ShaderConvert::CLUT_8;
 	StretchRect(sTex, GSVector4::zero(), dTex, dRect, m_convert.ps[static_cast<int>(shader)].get(), m_merge.cb.get(), nullptr, false);
 }
@@ -1015,10 +1016,10 @@ void GSDevice11::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offs
 	{
 		float scale;
 		float pad1[3];
-		u32 SBW, DBW, pad3;
+		u32 SBW, DBW, PageOffset;
 	};
 
-	const Uniforms cb = {sScale, {}, SBW, DBW};
+	const Uniforms cb = {sScale, {}, SBW, DBW, IndexedConversionPageOffset(offsetX, offsetY, SBW)};
 	m_ctx->UpdateSubresource(m_merge.cb.get(), 0, nullptr, &cb, 0, 0);
 
 	const GSVector4 dRect(0, 0, dTex->GetWidth(), dTex->GetHeight());
@@ -1042,6 +1043,17 @@ void GSDevice11::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32
 	m_ctx->UpdateSubresource(m_merge.cb.get(), 0, nullptr, &cb, 0, 0);
 
 	const ShaderConvert shader = ShaderConvert::DOWNSAMPLE_COPY;
+	StretchRect(sTex, GSVector4::zero(), dTex, dRect, m_convert.ps[static_cast<int>(shader)].get(), m_merge.cb.get(), nullptr, false);
+}
+
+void GSDevice11::MoveTexels(GSTexture* sTex, GSTexture* dTex, const GSVector4& dRect, const MoveTexelsConstants& cb)
+{
+	// The merge layout carries it: BGColor the four pairs, EMODA the flags.
+	MergeConstantBuffer mcb;
+	memcpy(&mcb, &cb, sizeof(mcb));
+	m_ctx->UpdateSubresource(m_merge.cb.get(), 0, nullptr, &mcb, 0, 0);
+
+	const ShaderConvert shader = ShaderConvert::MOVE_TEXELS;
 	StretchRect(sTex, GSVector4::zero(), dTex, dRect, m_convert.ps[static_cast<int>(shader)].get(), m_merge.cb.get(), nullptr, false);
 }
 
@@ -2035,6 +2047,8 @@ void GSDevice11::SetupPS(const PSSelector& sel, const GSHWDrawConfig::PSConstant
 		sm.AddMacro("PS_DITHER_ADJUST", sel.dither_adjust);
 		sm.AddMacro("PS_ZCLAMP", sel.zclamp);
 		sm.AddMacro("PS_SCANMSK", sel.scanmsk);
+		sm.AddMacro("PS_SAMPLE_MAP", sel.sample_map);
+		sm.AddMacro("PS_NATIVE_TAPS", sel.native_taps);
 		sm.AddMacro("PS_AUTOMATIC_LOD", sel.automatic_lod);
 		sm.AddMacro("PS_MANUAL_LOD", sel.manual_lod);
 		sm.AddMacro("PS_TEX_IS_FB", sel.tex_is_fb);

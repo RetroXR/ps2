@@ -337,7 +337,7 @@
 
 /* movzx r32 <- byte [abs] and r32 <- r8; the byte-register REX rule
  * (bare 0x40 for ids 4-7) lives in E_MOVEXT_RR's srcw==0 branch. */
-#define xe_movzx32_r8(dst, src8) do { XE_OPEN(); E_MOVEXT_RR(xep, 0, 0, 0, (dst), (src8)); XE_CLOSE(); } while (0)
+#define xe_movzx32_r8(dst, src8) do { XE_OPEN(); E_MOVEXT_RR(xep, 0, 0, 0, (dst), E_R8_ID(src8)); XE_CLOSE(); } while (0)
 
 
 #define xe_movzx32_r16(dst, src) do { XE_OPEN(); E_MOVEXT_RR(xep, 0, 0, 1, (dst), (src)); XE_CLOSE(); } while (0)
@@ -350,7 +350,7 @@
 
 
 /* movsx r32 <- r8/r16 (0F BE / 0F BF) */
-#define xe_movsx32_r8(dst, src8) do { XE_OPEN(); E_MOVEXT_RR(xep, 0, 1, 0, (dst), (src8)); XE_CLOSE(); } while (0)
+#define xe_movsx32_r8(dst, src8) do { XE_OPEN(); E_MOVEXT_RR(xep, 0, 1, 0, (dst), E_R8_ID(src8)); XE_CLOSE(); } while (0)
 #define xe_movsx32_r16(dst, src) do { XE_OPEN(); E_MOVEXT_RR(xep, 0, 1, 1, (dst), (src)); XE_CLOSE(); } while (0)
 
 /* shifts by CL, named */
@@ -372,8 +372,9 @@
 	{ intptr_t xd_ = ((intptr_t)xep + 5) - (intptr_t)(fn); \
 	  if (xd_ == (intptr_t)(int32_t)xd_) { E_CALL_REL(xep, (fn)); } \
 	  else { \
-		struct e_mem xm_; XE_MEM_ABS(xm_, (fn)); \
-		E_LEA(xep, 1, 0, 0 /* rax */, xm_); \
+		/* Out of rel32 reach, so out of rip-relative LEA reach too: \
+		 * the address goes in rax whole. */ \
+		E_MOV64_RI(xep, 1, 0 /* rax */, (intptr_t)(fn)); \
 		E_CALL_R(xep, 0); \
 	  } }; XE_CLOSE(); } while (0)
 
@@ -518,11 +519,11 @@ static uintptr_t xe_opaque_uptr(const void *p)
 	xe_fastcall0(fn); } while (0)
 
 #define xe_ret() do { XE_OPEN(); EW8(xep, 0xc3); XE_CLOSE(); } while (0)  /* xRET is a macro */
-#define xe_test8_rr(a, b) do { XE_OPEN(); E_TEST_RR_SZ(xep, 1, (a), (b)); XE_CLOSE(); } while (0)
+#define xe_test8_rr(a, b) do { XE_OPEN(); E_TEST_RR_SZ(xep, 1, E_R8_ID(a), E_R8_ID(b)); XE_CLOSE(); } while (0)
 
 
 #define xe_cmp64_ri(reg, imm)  do { XE_OPEN(); E_G1_RI(xep, 1, 7, (reg), (int32_t)(imm)); XE_CLOSE(); } while (0)
-#define xe_test8_ri(reg, imm)  do { XE_OPEN(); E_TEST_RI_SZ(xep, 1, (reg), (imm)); XE_CLOSE(); } while (0)
+#define xe_test8_ri(reg, imm)  do { XE_OPEN(); E_TEST_RI_SZ(xep, 1, E_R8_ID(reg), (imm)); XE_CLOSE(); } while (0)
 /* movmskps r32, xmm: 0F 50 /r, gpr in the reg field */
 #define xe_movmskps_rx(gpr, xmm) do { XE_OPEN(); E_SSE_RR(xep, 0x00, 0x50, (gpr), (xmm)); XE_CLOSE(); } while (0)
 
@@ -618,6 +619,7 @@ static uintptr_t xe_opaque_uptr(const void *p)
 		EW8(xep, (uint8_t)(0x70 | (cc))); EW8(xep, (uint8_t)xd8_); \
 	  } else { \
 		intptr_t xd32_ = (intptr_t)(target) - ((intptr_t)xep + 6); \
+		E_CHECK_REL32(xd32_); \
 		EW8(xep, 0x0f); EW8(xep, (uint8_t)(0x80 | (cc))); \
 		EW32(xep, (uint32_t)(int32_t)xd32_); \
 	  } }; XE_CLOSE(); } while (0)
@@ -706,7 +708,7 @@ static uintptr_t xe_opaque_uptr(const void *p)
 
 /* iMMI scalar stragglers */
 #define xe_bsr32_rr(d, s)      do { XE_OPEN();  \
-	{ EW8(xep, 0x0f); EW8(xep, 0xbd); E_MODRM_RR(xep, (d), (s)); }; XE_CLOSE(); } while (0)
+	{ E_REX(xep, 0, (d), 0, (s)); EW8(xep, 0x0f); EW8(xep, 0xbd); E_MODRM_RR(xep, (d), (s)); }; XE_CLOSE(); } while (0)
 #define xe_dec32_r(reg)        do { XE_OPEN(); E_INCDEC_R_SZ(xep, 4, 1, (reg)); XE_CLOSE(); } while (0)
 #define xe_udiv32_r(reg)       do { XE_OPEN(); E_G3_R(xep, 0, 6, (reg)); XE_CLOSE(); } while (0)
 /* pextrd gpr, xmm, imm: 66 0F 3A 16, xmm in reg field */
@@ -733,9 +735,10 @@ static uintptr_t xe_opaque_uptr(const void *p)
 #define xe_lea64_m(reg, addr)  do { XE_OPEN();  \
 	{ struct e_mem xm_; XE_MEM_ABS(xm_, addr); \
 	  E_LEA(xep, 1, 0, (reg), xm_); }; XE_CLOSE(); } while (0)
-#define xe_movsxd_rm16(reg, addr) do { XE_OPEN();  \
+/* movsx r32, word [abs]: the whole 32-bit register is written. */
+#define xe_movsx32_rm16(reg, addr) do { XE_OPEN();  \
 	{ struct e_mem xm_; XE_MEM_ABS(xm_, addr); \
-	  E_P16(xep); E_REX_MEM(xep, 0, (reg), xm_); \
+	  E_REX_MEM(xep, 0, (reg), xm_); \
 	  EW8(xep, 0x0f); EW8(xep, 0xbf); E_MODRM_MEM(xep, (reg), xm_, 0); }; XE_CLOSE(); } while (0)
 
 /* ================= iFPU vocabulary ================= */
@@ -1084,6 +1087,13 @@ static uintptr_t xe_opaque_uptr(const void *p)
 /* SSE fallback path pieces */
 #define xe_pcmpeqd_xmemg(x, m) do { XE_OPEN(); E_SSE_R_MEM(xep, 0x66, 0x76, (x), (m)); XE_CLOSE(); } while (0)
 #define xe_movups_memxg(m, x) do { XE_OPEN(); E_SSE_R_MEM(xep, 0x00, 0x11, (x), (m)); XE_CLOSE(); } while (0)
+/* xmm6-xmm15, which Win64 makes callee-saved, stored at [rsp + disp]
+ * and up, 16 bytes apiece, and loaded back. movups: the slots need no
+ * alignment. */
+#define xe_win64_save_xmm(disp) do { int xr_; for (xr_ = 6; xr_ < 16; xr_++) { \
+	struct e_mem xs_; XE_MEM_BD(xs_, 4, (disp) + (xr_ - 6) * 16); xe_movups_memxg(xs_, xr_); } } while (0)
+#define xe_win64_restore_xmm(disp) do { int xr_; for (xr_ = 6; xr_ < 16; xr_++) { \
+	struct e_mem xs_; XE_MEM_BD(xs_, 4, (disp) + (xr_ - 6) * 16); xe_movups_xmemg(xr_, xs_); } } while (0)
 #define xe_jmp_r(reg) do { XE_OPEN();  \
 	{ E_REX(xep, 0, 0, 0, (reg)); EW8(xep, 0xff); \
 	  EW8(xep, (uint8_t)(0xe0 | ((reg) & 7))); }; XE_CLOSE(); } while (0)
@@ -1116,7 +1126,7 @@ static uintptr_t xe_opaque_uptr(const void *p)
 	  else { EW8(xep, 0x0f); EW8(xep, (uint8_t)(0x80 | (cc))); } \
 	  (slot) = xep; EW32(xep, 0); }; XE_CLOSE(); } while (0)
 #define xe_fwd_set32(slot) do { XE_OPEN();  \
-	{ *(int32_t*)(slot) = (int32_t)(xep - ((slot) + 4)); }; XE_CLOSE(); } while (0)
+	{ EP32((uint8_t*)(slot), (int32_t)(xep - ((slot) + 4))); }; XE_CLOSE(); } while (0)
 
 /* Pad to a 16-byte boundary with NOPs, then patch. The legacy x86SetJ32A
  * did this so a branch target starts a fresh cache line; the padding is
@@ -1124,7 +1134,7 @@ static uintptr_t xe_opaque_uptr(const void *p)
  * is computed. */
 #define xe_fwd_set32_aligned(slot) do { XE_OPEN(); \
 	while (((uintptr_t)xep) & 0xf) EW8(xep, 0x90); \
-	{ *(int32_t*)(slot) = (int32_t)(xep - ((slot) + 4)); }; XE_CLOSE(); } while (0)
+	{ EP32((uint8_t*)(slot), (int32_t)(xep - ((slot) + 4))); }; XE_CLOSE(); } while (0)
 
 /* microVU_Lower vocabulary */
 #define xe_mulss_xm(x, addr)  do { XE_OPEN(); { struct e_mem xm_; XE_MEM_ABS(xm_, addr); \
@@ -1141,7 +1151,7 @@ static uintptr_t xe_opaque_uptr(const void *p)
 	  E_MODRM_RR(xep, (dst), (src)); }; XE_CLOSE(); } while (0)
 
 #define xe_cmp8_ri(reg, imm) do { XE_OPEN();  \
-	{ E_REX8_RM(xep, (reg)); \
+	{ E_REX8_RM(xep, E_R8_ID(reg)); \
 	  if ((reg) == 0) { EW8(xep, 0x3c); } \
 	  else { EW8(xep, 0x80); E_MODRM_RR(xep, 7, (reg)); } \
 	  EW8(xep, (uint8_t)(imm)); }; XE_CLOSE(); } while (0)

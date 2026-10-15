@@ -112,12 +112,11 @@ ifneq (,$(findstring unix,$(platform)))
       LDFLAGS += $(PTHREAD_FLAGS) -ldl
    endif
    FLAGS   +=
+   # No GL library on the link line: every GL entry point comes from the
+   # frontend through gladLoadGLLoader(), as in the CMake build.
    ifeq ($(HAVE_OPENGL),1)
       ifneq (,$(findstring gles,$(platform)))
          GLES = 1
-         GL_LIB := -lGLESv2
-      else
-         GL_LIB := -lGL
       endif
    endif
 
@@ -657,10 +656,7 @@ MULTI_ISA_UNSHARED_SRC := \
 	$(LRPS2_DIR)/GS/Renderers/SW/GSRendererSW.cpp \
 	$(LRPS2_DIR)/GS/Renderers/SW/GSSetupPrimCodeGenerator.cpp \
 	$(LRPS2_DIR)/GS/Renderers/SW/GSSetupPrimCodeGenerator.all.cpp \
-	$(LRPS2_DIR)/IPU/IPU_MultiISA.cpp \
-	$(LRPS2_DIR)/IPU/IPUdither.cpp \
-	$(LRPS2_DIR)/IPU/yuv2rgb.cpp \
-	$(LRPS2_DIR)/SPU2/ReverbResample.cpp
+	$(LRPS2_DIR)/IPU/IPU_MultiISA.cpp
 
 ifeq ($(IS_X86),1)
 ifeq ($(ENABLE_MULTI_ISA),1)
@@ -760,6 +756,9 @@ endif
 
 OBJECTS := $(SOURCES_CXX:.cpp=.o) $(SOURCES_CC:.cc=.o) $(SOURCES_C:.c=.o) $(SOURCES_ASM:.S=.o) $(MULTI_ISA_OBJECTS)
 DEPS    := $(SOURCES_CXX:.cpp=.d) $(SOURCES_CC:.cc=.d) $(SOURCES_C:.c=.d)
+# Each per-tier object writes its own dependency file beside it (-MMD), and a
+# header it includes has to rebuild it like any other object.
+DEPS    += $(MULTI_ISA_OBJECTS:.o=.d)
 
 # VIXL (SOURCES_CC) is third-party; silence its warnings for those objects only
 # (matches cmake's -w on the vixl target) without loosening warnings elsewhere.
@@ -865,10 +864,6 @@ endif
 # Route the x86 emitter's encoding through the C89 macro core in
 # common/emitter/c89emit.h, behind the header-only shim, instead of the
 # out-of-line C++ implementations. Off by default.
-#
-# Equivalence is checked by tests/emitter/switch_equiv.cpp, which compiles one
-# driver both ways and diffs the emitted bytes. That is byte equality of the
-# emitter's output; it is not a claim that the emulator has been run this way.
 #
 # Toggling this needs a clean build. It changes header content rather than any
 # source file, so make will not rebuild translation units that only include

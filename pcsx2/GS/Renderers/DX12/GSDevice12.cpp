@@ -775,14 +775,17 @@ bool GSDevice12::AllocatePreinitializedGPUBuffer(u32 size, ID3D12Resource** gpu_
 	void* mapped;
 	hr = cpu_buffer->Map(0, &read_range, &mapped);
 	if (FAILED(hr))
+	{
+		DeferResourceDestruction(&cpu_alloc, cpu_buffer.get());
 		return false;
+	}
 	fill_callback(mapped);
 	cpu_buffer->Unmap(0, &write_range);
 
 	if (!CreatePlacedResource(&rd, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON,
 			nullptr, gpu_buffer, gpu_alloc))
 	{
-		gs_d3d12_heap_free(&m_heap, &cpu_alloc);
+		DeferResourceDestruction(&cpu_alloc, cpu_buffer.get());
 		return false;
 	}
 
@@ -1132,9 +1135,9 @@ GSTexture* GSDevice12::CreateSurface(GSTexture::Type type, int width, int height
 	return tex.release();
 }
 
-std::unique_ptr<GSDownloadTexture> GSDevice12::CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format)
+GSDownloadTexturePtr GSDevice12::CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format)
 {
-	return GSDownloadTexture12::Create(width, height, format);
+	return GSDownloadTexturePtr(GSDownloadTexture12::Create(width, height, format).release());
 }
 
 void GSDevice12::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
@@ -1358,21 +1361,22 @@ void GSDevice12::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 	video_cb(RETRO_HW_FRAME_BUFFER_VALID, texture->GetWidth(), texture->GetHeight(), 0);
 }
 
-void GSDevice12::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
+void GSDevice12::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize, u32 samples)
 {
 	// match merge cb
 	struct Uniforms
 	{
 		float scale;
-		float pad1[3];
+		float samples; // BGColor.y
+		float pad1[2];
 		u32 offsetX, offsetY, dOffset;
 		u32 pad2;
 	};
-	const Uniforms cb = {sScale, {}, offsetX, offsetY, dOffset};
+	const Uniforms cb = {sScale, static_cast<float>(samples), {}, offsetX, offsetY, dOffset};
 	SetUtilityRootSignature();
 	SetUtilityPushConstants(&cb, sizeof(cb));
 
-	const GSVector4 dRect(0, 0, dSize, 1);
+	const GSVector4 dRect(0, 0, dSize * samples, samples);
 	const ShaderConvert shader = (dSize == 16) ? ShaderConvert::CLUT_4 : ShaderConvert::CLUT_8;
 	DoStretchRect(static_cast<GSTexture12*>(sTex), GSVector4::zero(), static_cast<GSTexture12*>(dTex), dRect,
 		m_convert[static_cast<int>(shader)].get(), false, true);
@@ -1385,10 +1389,10 @@ void GSDevice12::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offs
 	{
 		float scale;
 		float pad1[3];
-		u32 SBW, DBW, pad2;
+		u32 SBW, DBW, PageOffset;
 	};
 
-	const Uniforms cb = {sScale, {}, SBW, DBW};
+	const Uniforms cb = {sScale, {}, SBW, DBW, IndexedConversionPageOffset(offsetX, offsetY, SBW)};
 	SetUtilityRootSignature();
 	SetUtilityPushConstants(&cb, sizeof(cb));
 
@@ -1415,6 +1419,16 @@ void GSDevice12::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32
 	SetUtilityPushConstants(&cb, sizeof(cb));
 
 	const ShaderConvert shader = ShaderConvert::DOWNSAMPLE_COPY;
+	DoStretchRect(static_cast<GSTexture12*>(sTex), GSVector4::zero(), static_cast<GSTexture12*>(dTex), dRect,
+		m_convert[static_cast<int>(shader)].get(), false, true);
+}
+
+void GSDevice12::MoveTexels(GSTexture* sTex, GSTexture* dTex, const GSVector4& dRect, const MoveTexelsConstants& cb)
+{
+	SetUtilityRootSignature();
+	SetUtilityPushConstants(&cb, sizeof(cb));
+
+	const ShaderConvert shader = ShaderConvert::MOVE_TEXELS;
 	DoStretchRect(static_cast<GSTexture12*>(sTex), GSVector4::zero(), static_cast<GSTexture12*>(dTex), dRect,
 		m_convert[static_cast<int>(shader)].get(), false, true);
 }
@@ -2485,6 +2499,8 @@ const ID3DBlob* GSDevice12::GetTFXPixelShader(const GSHWDrawConfig::PSSelector& 
 	sm.AddMacro("PS_DITHER_ADJUST", sel.dither_adjust);
 	sm.AddMacro("PS_ZCLAMP", sel.zclamp);
 	sm.AddMacro("PS_SCANMSK", sel.scanmsk);
+	sm.AddMacro("PS_SAMPLE_MAP", sel.sample_map);
+	sm.AddMacro("PS_NATIVE_TAPS", sel.native_taps);
 	sm.AddMacro("PS_AUTOMATIC_LOD", sel.automatic_lod);
 	sm.AddMacro("PS_MANUAL_LOD", sel.manual_lod);
 	sm.AddMacro("PS_TEX_IS_FB", sel.tex_is_fb);

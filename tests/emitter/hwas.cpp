@@ -29,6 +29,10 @@
 #include "common/emitter/x86types.h"
 #include "common/emitter/c89ops.h"
 
+/* This harness links no recompiler object, so it owns the cursor. */
+thread_local u8* x86Ptr PCSX2_TLS_INITIAL_EXEC = nullptr;
+thread_local XMMSSEType g_xmmtypes[iREGCNT_XMM] PCSX2_TLS_INITIAL_EXEC = {XMMT_INT};
+
 /* Somewhere to emit into. */
 static uint8_t s_buf[256];
 
@@ -149,6 +153,16 @@ int main(void)
 		return 0;
 	}
 
+	/* The Win64 frame's xmm6-xmm15 saves: rsp needs a SIB byte, the low
+	 * registers no REX and the high ones REX.R, and the last slots pass
+	 * a byte displacement. */
+	CASE("movups [rsp+0x20], xmm6",   { struct e_mem m; XE_MEM_BD(m, 4, 0x20); xe_movups_memxg(m, 6); });
+	CASE("movups [rsp+0x30], xmm7",   { struct e_mem m; XE_MEM_BD(m, 4, 0x30); xe_movups_memxg(m, 7); });
+	CASE("movups [rsp+0x40], xmm8",   { struct e_mem m; XE_MEM_BD(m, 4, 0x40); xe_movups_memxg(m, 8); });
+	CASE("movups [rsp+0xb0], xmm15",  { struct e_mem m; XE_MEM_BD(m, 4, 0xb0); xe_movups_memxg(m, 15); });
+	CASE("movups xmm6, [rsp+0x20]",   { struct e_mem m; XE_MEM_BD(m, 4, 0x20); xe_movups_xmemg(6, m); });
+	CASE("movups xmm15, [rsp+0xb0]",  { struct e_mem m; XE_MEM_BD(m, 4, 0xb0); xe_movups_xmemg(15, m); });
+
 	/* Register-to-register ALU, low and extended registers, since the REX
 	 * prefix is where an encoder most often goes wrong. */
 	CASE("add eax, ecx",     xe_add32_rr(0, 1));
@@ -197,6 +211,32 @@ int main(void)
 	CASE("cmp rax, rcx",         xe_cmp64_rr(0, 1));
 	CASE("movsxd rax, ecx",      xe_movsxd_rr(0, 1));
 	CASE("movsxd r8, r9d",       xe_movsxd_rr(8, 9));
+	/* movsx from a word in memory writes the whole 32-bit register; the
+	 * PDIVBW divisor is loaded this way. */
+	CASE("movsx ecx, WORD PTR ds:0x12345678", xe_movsx32_rm16(1, 0x12345678));
+	CASE("movsx r9d, WORD PTR ds:0x100",      xe_movsx32_rm16(9, 0x100));
+	/* bsr carries REX for extended registers. */
+	CASE("bsr eax, ecx",         xe_bsr32_rr(0, 1));
+	CASE("bsr r8d, r9d",         xe_bsr32_rr(8, 9));
+	CASE("bsr eax, r12d",        xe_bsr32_rr(0, 12));
+	/* Byte registers 4..7 are spl/bpl/sil/dil, never ah/ch/dh/bh. */
+	CASE("movzx eax, dil",       xe_movzx32_r8(0, 7));
+	CASE("movsx ecx, sil",       xe_movsx32_r8(1, 6));
+	CASE("movzx r8d, r9b",       xe_movzx32_r8(8, 9));
+	CASE("test sil, sil",        xe_test8_rr(6, 6));
+	CASE("test al, al",          xe_test8_rr(0, 0));
+	CASE("test dil, 0x2",        xe_test8_ri(7, 2));
+	CASE("test al, 0x2",         xe_test8_ri(0, 2));
+	CASE("cmp bpl, 0x5",         xe_cmp8_ri(5, 5));
+	CASE("cmp al, 0x0",          xe_cmp8_ri(0, 0));
+	/* An index with no base, extended or not: the SIB index field takes
+	 * the low three bits and REX.X the fourth. */
+	CASE("mov rax, QWORD PTR [rcx*4+0x1000]",
+		struct e_mem m_; E_MEM(m_, E_NOREG, 1, 4, 0x1000); xe_mov64_rmemg(0, m_));
+	CASE("mov rax, QWORD PTR [r8*4+0x1000]",
+		struct e_mem m_; E_MEM(m_, E_NOREG, 8, 4, 0x1000); xe_mov64_rmemg(0, m_));
+	CASE("mov r9, QWORD PTR [r15*8+0x40]",
+		struct e_mem m_; E_MEM(m_, E_NOREG, 15, 8, 0x40); xe_mov64_rmemg(9, m_));
 
 	/* Shifts by an immediate, including the one-bit short form. */
 	CASE("shl eax, 1",           xe_shl32_ri(0, 1));

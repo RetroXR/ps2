@@ -7,7 +7,6 @@
 
 #include "page_tracker.hpp"
 #include "gs_registers.hpp"
-#include "muglm/muglm_impl.hpp"
 #include <stdint.h>
 #include "shaders/data_structures.h"
 #include "shaders/swizzle_utils.h"
@@ -23,14 +22,21 @@ PageRect compute_page_rect(uint32_t base_256, uint32_t x, uint32_t y,
 
 uint32_t psm_word_write_mask(uint32_t psm);
 
+/* Which of a triangle's three vertices is the provoking corner, and which
+ * two span the diagonal. Three plain indices, no arithmetic. */
+struct PrimOrder
+{
+	int32_t x, y, z;
+};
+
 bool triangle_is_parallelogram_candidate(const VertexPosition *pos, const VertexAttribute *attr,
-                                         const muglm::ivec2 &lo, const muglm::ivec2 &hi, const PRIMBits &prim,
-                                         muglm::ivec3 &parallelogram_order);
+                                         const int32_t *lo, const int32_t *hi, const PRIMBits &prim,
+                                         PrimOrder &parallelogram_order);
 
 bool triangles_form_parallelogram(const VertexPosition *pos, const VertexAttribute *attr,
-                                  const muglm::ivec3 &order,
+                                  const PrimOrder &order,
                                   const VertexPosition *last_pos, const VertexAttribute *last_attr,
-                                  const muglm::ivec3 &last_order, const PRIMBits &prim);
+                                  const PrimOrder &last_order, const PRIMBits &prim);
 
 void compute_has_potential_feedback(const TEX0Bits &tex0, const CLAMPBits &clamp,
                                     const FRAMEBits &frame, const ZBUFBits &z,
@@ -99,11 +105,28 @@ static inline void vram_readback(void *readback_data, const void *host_data, uin
 				static_cast<uint8_t *>(readback_data)[output_pixel] = static_cast<const uint8_t *>(host_data)[4 * addr + 3];
 				break;
 
-			// 4-bit is not allowed for readback.
+			// 4-bit pixels, two to a byte, the first in the low nibble.
+			case PSMT4:
+			case PSMT4HL:
+			case PSMT4HH:
+			{
+				uint32_t nibble;
+				if (PSM == PSMT4)
+					nibble = static_cast<const uint8_t *>(host_data)[addr / 2] >> (4 * (addr & 1));
+				else
+					nibble = static_cast<const uint32_t *>(host_data)[addr] >> (PSM == PSMT4HL ? 24 : 28);
+				nibble &= 0xfu;
+
+				auto &out = static_cast<uint8_t *>(readback_data)[output_pixel / 2];
+				if (output_pixel & 1)
+					out = uint8_t(out | (nibble << 4));
+				else
+					out = uint8_t(nibble);
+				break;
+			}
 
 			default:
-				LOGW("Unrecognized fifo readback format.\n");
-				static_cast<uint32_t *>(readback_data)[output_pixel] = 0;
+				break;
 			}
 		}
 	}

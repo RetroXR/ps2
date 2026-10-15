@@ -582,7 +582,7 @@ void Sio2::Write(u8 data)
 	if (!send3Read)
 	{
 		// No more SEND3 positions to access, but the game is still sending us SIO2 writes. Lets ignore them.
-		if (send3Position > 16)
+		if (send3Position >= SIO2_SEND3_COUNT)
 			return;
 
 		const u32 currentSend3 = send3[send3Position];
@@ -689,21 +689,114 @@ void sioSetGameSerial( const char* serial )
 	}
 }
 
-bool SaveStateBase::sio2Freeze()
+/* A SioFifo goes in as a u32 count followed by its bytes in front-to-back
+ * order, which is the shape the state has always carried. */
+static void FreezeSioFifo(SaveStateBase *s, SioFifo &q)
 {
-	if (!(FreezeTag("sio2")))
+	u32 count = (u32)q.size();
+
+	SaveState_Freeze(s, count);
+
+	if (count == 0)
+	{
+		if (SaveState_IsLoading(s))
+			q.clear();
+		return;
+	}
+
+	if (SaveState_IsSaving(s))
+	{
+		SaveState_FreezeMem(s, q.data + q.head, (int)count);
+		return;
+	}
+
+	/* count came out of the state, and the loop below grows the fifo to
+	 * match it before anything reads the bytes it claims are there. The
+	 * fifo has no fixed capacity to check against, so check the only
+	 * ceiling there is: a queue cannot have held more bytes than the
+	 * block still has left. Without it, a four-billion count is four
+	 * billion push_backs before the read that would have failed. */
+	if ((size_t)count > SaveState_BytesLeft(s))
+	{
+		s->error = true;
+		q.clear();
+		return;
+	}
+
+	/* Size the fifo first, then read straight into it. A cleared fifo
+	 * starts at index 0 and push_back grows it geometrically, so after
+	 * count pushes the bytes are contiguous from data[0] -- which is
+	 * where they were written from. No temporary, and so no allocation
+	 * that can fail partway through a load. */
+	q.clear();
+	{
+		u32 i;
+
+		for (i = 0; i < count; i++)
+			q.push_back(0);
+		SaveState_FreezeMem(s, q.data, (int)count);
+	}
+}
+
+/* The protocol state of every card: the terminator MCMAN set, the sector
+ * and transfer address of the access in progress, the PS1 flag and the
+ * auto-eject countdown. port and slot are fixed by position. */
+static bool FreezeMcds(SaveStateBase *s)
+{
+	u32 port, slot;
+
+	if (!SaveState_FreezeTag(s, "mcds"))
 		return false;
 
-	Freeze(sio2);
-	FreezeSioFifo(fifoIn);
-	FreezeSioFifo(fifoOut);
-	if (!IsOkay())
+	for (port = 0; port < SIO::PORTS; port++)
+	{
+		for (slot = 0; slot < SIO::SLOTS; slot++)
+		{
+			_mcd *m = &mcds[port][slot];
+			u8 good = m->goodSector ? 1 : 0;
+
+			SaveState_Freeze(s, m->sectorAddr);
+			SaveState_Freeze(s, m->transferAddr);
+			SaveState_Freeze(s, m->autoEjectTicks);
+			SaveState_Freeze(s, m->term);
+			SaveState_Freeze(s, m->FLAG);
+			SaveState_Freeze(s, good);
+			if (SaveState_IsLoading(s))
+				m->goodSector = good != 0;
+		}
+	}
+
+	return SaveState_IsOkay(s);
+}
+
+bool sio2Freeze(SaveStateBase *s)
+{
+	if (!(SaveState_FreezeTag(s, "sio2")))
 		return false;
+
+	SaveState_Freeze(s, sio2);
+	if (SaveState_IsLoading(s) && (!sio_port_slot_ok(sio2.port, sio2.slot)
+			|| !sio2_send3_ok(sio2.send3Position, sio2.commandLength)))
+		s->error = true;
+	FreezeSioFifo(s, fifoIn);
+	FreezeSioFifo(s, fifoOut);
+	if (!SaveState_IsOkay(s))
+		return false;
+
+	/* States saved before the card protocol state was added end the SIO2
+	 * block here; the cards then keep the state they have. */
+	if (SaveState_IsSaving(s) || SaveState_PeekTag(s, "mcds"))
+	{
+		if (!FreezeMcds(s) || !g_MemoryCardProtocol.FreezePS1State(s))
+			return false;
+	}
+	else
+		log_cb(RETRO_LOG_INFO, "sio2Freeze: state predates the memory card protocol block; cards keep their current state.\n");
 
 	// CRCs for memory cards.
 	// If the memory card hasn't changed when loading state, we can safely skip ejecting it.
 	u64 mcdCrcs[SIO::PORTS][SIO::SLOTS];
-	if (IsSaving())
+	if (SaveState_IsSaving(s))
 	{
 		for (u32 port = 0; port < SIO::PORTS; port++)
 		{
@@ -711,11 +804,11 @@ bool SaveStateBase::sio2Freeze()
 				mcdCrcs[port][slot] = FileMcd_GetCRC(port, slot);
 		}
 	}
-	Freeze(mcdCrcs);
-	if (!IsOkay())
+	SaveState_Freeze(s, mcdCrcs);
+	if (!SaveState_IsOkay(s))
 		return false;
 
-	if (IsLoading())
+	if (SaveState_IsLoading(s))
 	{
 		bool ejected = false;
 		for (u32 port = 0; port < SIO::PORTS && !ejected; port++)
@@ -735,14 +828,23 @@ bool SaveStateBase::sio2Freeze()
 	return true;
 }
 
-bool SaveStateBase::sioFreeze()
+bool sioFreeze(SaveStateBase *s)
 {
-	if (!(FreezeTag("sio0")))
+	if (!(SaveState_FreezeTag(s, "sio0")))
 		return false;
 
-	Freeze(sio0);
+	SaveState_Freeze(s, sio0);
+	if (SaveState_IsLoading(s) && !sio_port_slot_ok(sio0.port, sio0.slot))
+		s->error = true;
+	if (!SaveState_IsOkay(s))
+		return false;
 
-	return IsOkay();
+	/* A PS1 card transfer spans many SIO0 bytes, all to the card selected
+	 * at its first one. */
+	if (SaveState_IsLoading(s))
+		mcd = &mcds[sio0.port][sio0.slot];
+
+	return true;
 }
 
 std::tuple<u32, u32> sioConvertPadToPortAndSlot(u32 index)

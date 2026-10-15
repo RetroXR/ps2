@@ -18,6 +18,7 @@
 #include "SPR.h"
 #include "VUmicro.h"
 #include "MTVU.h"
+#include "Config.h"
 
 static bool spr0finished = false;
 static bool spr1finished = false;
@@ -380,7 +381,7 @@ int  _SPR1chain(void)
 	spr1ch.madr += partialqwc * 16;
 	spr1ch.qwc -= partialqwc;
 
-	hwDmacSrcTadrInc(spr1ch);
+	hwDmacSrcTadrInc(&spr1ch);
 
 	return (partialqwc);
 }
@@ -450,7 +451,7 @@ void _dmaSPR1(void)   // toSPR work function
 			if (spr1ch.chcr.TTE)
 				SPR1transfer(ptag, 1); // Transfer Tag
 
-			done = hwDmacSrcChain(spr1ch, ptag->ID);
+			done = hwDmacSrcChain(&spr1ch, ptag->ID);
 			SPR1chain(); // Transfers the data set by the switch
 
 			if (spr1ch.chcr.TIE && ptag->IRQ) // Check TIE bit of CHCR and IRQ bit of tag
@@ -496,14 +497,14 @@ void SPRTOinterrupt(void)
 	hwDmacIrq(DMAC_TO_SPR);
 }
 
-bool SaveStateBase::sprFreeze()
+bool sprFreeze(SaveStateBase *s)
 {
-	if (!(FreezeTag("SPRdma")))
+	if (!(SaveState_FreezeTag(s, "SPRdma")))
 		return false;
 
-	Freeze(spr0finished);
-	Freeze(spr1finished);
-	Freeze(mfifotransferred);
+	SaveState_Freeze(s, spr0finished);
+	SaveState_Freeze(s, spr1finished);
+	SaveState_Freeze(s, mfifotransferred);
 
-	return IsOkay();
+	return SaveState_IsOkay(s);
 }

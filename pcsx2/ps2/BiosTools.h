@@ -14,37 +14,52 @@
  */
 
 #pragma once
-#include <string>
 
-const u32 ThreadListInstructions[3] =
-{
-	0xac420000, // sw v0,0x0(v0)
-	0x00000000, // no-op
-	0x00000000, // no-op
-};
+#include "../MemoryTypes.h"
 
-struct BiosDebugInformation
+typedef struct BiosDebugInformation
 {
 	u32 eeThreadListAddr;
 	u32 iopThreadListAddr;
 	u32 iopModListAddr;
-};
+} BiosDebugInformation;
 
 extern BiosDebugInformation CurrentBiosInformation;
 extern u32 BiosVersion;		// Used by CDVD
 extern u32 BiosRegion;		// Used by CDVD
 extern bool NoOSD;			// Used for HLE OSD Config Params
-extern bool AllowParams1;
-extern bool AllowParams2;
-extern u32 BiosChecksum;
+/* MSVC decorates C++ data symbols; the ELF ABI does not. A variable a C
+ * unit references therefore has to be declared -- and so, through this
+ * header, defined -- with C language linkage, or the Windows link fails
+ * on an undecorated reference while every other target is fine. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+	extern bool AllowParams1;
+	extern bool AllowParams2;
+	extern u32 BiosChecksum;
+#ifdef __cplusplus
+}
+#endif
 #define BIOS_DESCRIPTION_MAX 96
 #define BIOS_SERIAL_MAX      32
 #define BIOS_ZONE_MAX        16
 
-extern char BiosDescription[];
+#ifdef __cplusplus
+extern "C" {
+#endif
+	extern char BiosDescription[];
+#ifdef __cplusplus
+}
+#endif
 extern char BiosSerial[];
+/* The BIOS path is still a std::string, so it is the one declaration here
+ * that C cannot see. Everything above it is reachable from both. */
+#ifdef __cplusplus
+#include <string>
 extern std::string BiosPath;
-extern bool LoadBIOS();
-extern bool IsBIOS(const char* filename, u32& version, char* description, size_t description_size, u32& region, char* zone, size_t zone_size);
+#endif
+extern bool LoadBIOS(void);
+extern bool IsBIOS(const char *filename, u32 *version, char *description, size_t description_size, u32 *region, char *zone, size_t zone_size);
 extern bool IsBIOSAvailable(const char* full_path);
 

@@ -287,7 +287,7 @@ bool PageTracker::mark_transfer_copy(const PageRect &dst_rect, const PageRect &s
 			if ((src_rect.block_mask & state.copy_write_block_mask) != 0)
 				has_hazard = true;
 
-			state.need_host_write_timeline_mask |= dst_rect.block_mask;
+			state.need_host_write_timeline_mask |= src_rect.block_mask;
 			state.copy_read_block_mask |= src_rect.block_mask;
 
 			TRACE("TRACKER || PAGE 0x%x, READ |= 0x%x -> 0x%x\n",
@@ -335,7 +335,10 @@ void PageTracker::mark_texture_read(const PageRect &rect)
 	                    (rect.page_height - 1) * rect.page_stride +
 	                    rect.page_width - 1;
 
-	if (end_page < pending_fb_write_page_lo || start_page > pending_fb_write_page_hi)
+	// The ranges are not wrapped: one that runs past the end of the GS
+	// memory comes round to its start, and is not compared this way.
+	if (end_page <= page_state_mask && pending_fb_write_page_hi <= page_state_mask &&
+	    (end_page < pending_fb_write_page_lo || start_page > pending_fb_write_page_hi))
 		return;
 
 	// Strict interpretation of minimal caching.
@@ -451,7 +454,9 @@ PageTracker::register_cached_texture(const PageRect *level_rect, uint32_t levels
 	// Only bother trying to optimize small uploads.
 	// There must be no hazards, in the sense that it's safe to just read the CPU VRAM.
 	// In this case we elide the marking of CACHED reads on the pages.
-	bool promote_to_cpu = levels == 1 &&
+	// Super-sampled images read GPU-only sample planes, so they must keep
+	// those reads tracked even when the resolved page is available on CPU.
+	bool promote_to_cpu = handle->image->get_create_info().layers == 1 && levels == 1 &&
 	                      level_rect[0].page_width == 1 &&
 	                      level_rect[0].page_height == 1 &&
 	                      (has_punchthrough_host_write(level_rect[0]) ||

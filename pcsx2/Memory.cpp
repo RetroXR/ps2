@@ -47,6 +47,10 @@ BIOS
 #include "ps2/BiosTools.h"
 #include "SPU2/spu2.h"
 
+#if defined(_WIN32)
+#include "common/RedtapeWindows.h"
+#endif
+
 namespace HostMemoryMap
 {
 	extern "C" {
@@ -54,34 +58,146 @@ namespace HostMemoryMap
 	}
 } // namespace HostMemoryMap
 
-/// Attempts to find a spot near static variables for the main memory
-static VirtualMemoryManagerPtr AllocateVirtualMemory(const char* name, size_t size, size_t offset_from_base)
-{
-#if defined(_WIN32)
-	// Everything looks nicer when the start of all the sections is a nice round looking number.
-	// Also reduces the variation in the address due to small changes in code.
-	// Breaks ASLR but so does anything else that tries to make addresses constant for our debugging pleasure
-	uptr codeBase = (uptr)(void*)AllocateVirtualMemory / (1 << 28) * (1 << 28);
+/* The recompilers address this module's globals (cpuRegs, vuRegs, the
+ * constant tables) with RIP-relative or abs32 operands, so every code
+ * reservation has to sit within +-2GB of the module's data. When it does
+ * not, the C89 emitter cannot encode the operand and aborts at the first
+ * emission (FATAL_APP_EXIT on Windows, SIGABRT elsewhere); before the
+ * emitter grew that check the displacement was silently truncated instead.
+ *
+ * The old placement tried eleven fixed 256MB-aligned bases around the
+ * module and fell back to wherever the OS put it. Inside RetroArch, which
+ * has loaded dozens of DLLs, a GPU driver and its own heaps around the
+ * core, none of those eleven exact bases is free often enough that the
+ * fallback was hit at random from run to run (ASLR), and the core died the
+ * moment a game started using the VUs. macOS and Linux never attempted a
+ * near placement at all.
+ *
+ * Now: walk the free address space near the module and take the first hole
+ * that fits. On Windows VirtualQuery enumerates the holes exactly; on the
+ * mman platforms the kernel only takes hints, so step candidate bases
+ * through the window and keep the first mapping the kernel honoured.
+ *
+ * The window is a reach budget, not a distance from a point. Two facts the
+ * first cut of this got wrong let the abort survive at random (still-crashing
+ * reports after the near placement landed and its diagnostic stayed silent):
+ *
+ *   - The emit cursor sweeps the WHOLE reservation (CodeSize, ~305MB), so a
+ *     reference from a block near the far end of the reservation to a global
+ *     is that far end's distance, not the base's. A base admitted 1.75GB from
+ *     the module plus 305MB of code reaches 2.05GB -- past the +-2GB rip/abs32
+ *     limit -- and the emitter aborts. The base window has to leave room for
+ *     the reservation's own span on top of the module.
+ *   - The globals are not at one point. This module's data section is tens of
+ *     MB and cpuRegs / vuRegs / mVUglob / microVU0,1 are scattered across it,
+ *     so reach has to be measured against the whole image span, not a single
+ *     anchor address.
+ *
+ * So bound the whole reservation [base, base+size] against the whole image
+ * [anchor +- MODULE_SPAN]: the worst operand is then HALF + MODULE_SPAN =
+ * RIP_LIMIT < 2GB for every cursor-to-global pair, which is what the emitter
+ * needs. */
 
-	// The allocation is ~640MB in size, slighly under 3*2^28.
-	// We'll hope that the code generated for the PCSX2 executable stays under 512MB (which is likely)
-	// On x86-64, code can reach 8*2^28 from its address [-6*2^28, 4*2^28] is the region that allows for code in the 640MB allocation 
-	// to reach 512MB of code that either starts at codeBase or 256MB before it.
-	// We start high and count down because on macOS code starts at the beginning of useable address space, so starting as far ahead 
-	// as possible reduces address variations due to code size.  Not sure about other platforms.  Obviously this only actually 
-	// affects what shows up in a debugger and won't affect performance or correctness of anything.
-	for (int offset = 4; offset >= -6; offset--)
+static const uptr RIP_LIMIT   = 0x7C000000; /* 1.9375GB: 2GB less rip-bias/operand-tail headroom */
+static const uptr MODULE_SPAN  = 0x10000000; /* 256MB: over-estimate of the loaded image, so a global
+                                              * anywhere in it -- not just the anchor -- is reachable */
+static const uptr NEAR_HALF   = RIP_LIMIT - MODULE_SPAN; /* usable half-window for the base */
+
+static inline uptr near_anchor(void)
+{
+	return (uptr)(void*)&near_anchor;
+}
+
+static VirtualMemoryManagerPtr TryAt(const char* name, uptr base, size_t size, bool allow_high)
+{
+	/* Main memory (EE RAM) must not have the pointer sign bit set: VTLB
+	 * uses that bit to mark an address as a hardware-register handler
+	 * rather than real RAM (vtlb.cpp: "if ((sptr)p < 0)"). The code
+	 * reservation is never seen by VTLB, so a high (sign-bit-set) base is
+	 * fine for it -- and on Win64 the module itself is based high, so the
+	 * near search MUST accept high addresses or it can never place the
+	 * reservation next to the module. */
+	if (!allow_high && ((sptr)base < 0 || (sptr)(base + size - 1) < 0))
+		return nullptr;
+	VirtualMemoryManagerPtr mgr = std::make_shared<VirtualMemoryManager>(name, base, size, /*upper_bounds=*/0, /*strict=*/true);
+	if (mgr->IsOk())
+		return mgr;
+	return nullptr;
+}
+
+#if defined(_WIN32)
+static VirtualMemoryManagerPtr AllocateNearModule(const char* name, size_t size, bool allow_high)
+{
+	const uptr anchor = near_anchor();
+	const uptr lo     = (anchor > NEAR_HALF) ? (anchor - NEAR_HALF) : 0x10000;
+	/* The base's far edge: base+size must stay within NEAR_HALF of the
+	 * anchor, so the far end of the reservation reaches the low globals. */
+	const uptr hi     = anchor + NEAR_HALF;
+	uptr addr         = lo;
+	MEMORY_BASIC_INFORMATION mbi;
+
+	while (addr < hi && VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)) == sizeof(mbi))
 	{
-		uptr base = codeBase + (offset << 28) + offset_from_base;
-		// VTLB will throw a fit if we try to put EE main memory here
-		if ((sptr)base < 0 || (sptr)(base + size - 1) < 0)
-			continue;
-		VirtualMemoryManagerPtr mgr = std::make_shared<VirtualMemoryManager>(name, base, size, /*upper_bounds=*/0, /*strict=*/true);
-		if (mgr->IsOk())
+		const uptr region_base = (uptr)mbi.BaseAddress;
+		const uptr region_end  = region_base + (uptr)mbi.RegionSize;
+		if (mbi.State == MEM_FREE)
+		{
+			/* Reservations land on the 64K allocation granularity. */
+			uptr cand = (region_base + 0xFFFF) & ~(uptr)0xFFFF;
+			if (cand < lo)
+				cand = (lo + 0xFFFF) & ~(uptr)0xFFFF;
+			if (cand + size <= region_end && cand + size <= hi)
+			{
+				VirtualMemoryManagerPtr mgr = TryAt(name, cand, size, allow_high);
+				if (mgr)
+					return mgr;
+			}
+		}
+		if (region_end <= addr)
+			break;
+		addr = region_end;
+	}
+	return nullptr;
+}
+#else
+static VirtualMemoryManagerPtr AllocateNearModule(const char* name, size_t size, bool allow_high)
+{
+	const uptr anchor = near_anchor();
+	const uptr step   = 0x04000000; /* 64MB */
+	/* Below the module first: on macOS the mmap area sits under the
+	 * image, on Linux above; try both directions alternately. off+size is
+	 * capped at NEAR_HALF so the whole reservation, either side, reaches
+	 * every global within +-MODULE_SPAN of the anchor. */
+	for (uptr off = step; off + size <= NEAR_HALF; off += step)
+	{
+		if (anchor > off + size)
+		{
+			VirtualMemoryManagerPtr mgr = TryAt(name, (anchor - off - size) & ~(uptr)0xFFFF, size, allow_high);
+			if (mgr)
+				return mgr;
+		}
+		VirtualMemoryManagerPtr mgr = TryAt(name, (anchor + off) & ~(uptr)0xFFFF, size, allow_high);
+		if (mgr)
 			return mgr;
 	}
+	return nullptr;
+}
 #endif
-	return std::make_shared<VirtualMemoryManager>(name, 0, size);
+
+/// Attempts to find a spot near this module's globals for the memory maps
+static VirtualMemoryManagerPtr AllocateVirtualMemory(const char* name, size_t size, bool code)
+{
+	VirtualMemoryManagerPtr mgr = AllocateNearModule(name, size, /*allow_high=*/code);
+	if (mgr)
+		return mgr;
+
+	mgr = std::make_shared<VirtualMemoryManager>(name, 0, size);
+	if (code && mgr->IsOk())
+		log_cb(RETRO_LOG_ERROR, "Could not place the %zu MB code reservation within 2GB of the core "
+		                        "(module at %p, reservation at %p). The recompilers cannot address "
+		                        "the core's globals from there.\n",
+		       size >> 20, (void*)near_anchor(), (void*)mgr->GetBase());
+	return mgr;
 }
 
 #if defined(_WIN32)
@@ -192,8 +308,8 @@ SysMainMemory::Placement SysMainMemory::PlaceMainAndCode()
 			"falling back to fixed slots\n");
 	}
 #endif
-	return Placement(AllocateVirtualMemory("pcsx2", HostMemoryMap::MainSize, 0),
-		AllocateVirtualMemory(nullptr, HostMemoryMap::CodeSize, HostMemoryMap::MainSize));
+	return Placement(AllocateVirtualMemory("pcsx2", HostMemoryMap::MainSize, false),
+		AllocateVirtualMemory(nullptr, HostMemoryMap::CodeSize, true));
 }
 
 // --------------------------------------------------------------------------------------
@@ -318,25 +434,25 @@ static void memMapVUmicro(void)
 	// support needs to be coded to reset the memMappings when MTVU is
 	// turned off/on. For now we just always use the vu data handlers...
 	if (1||THREAD_VU1) vtlb_MapHandler(vu1_data_mem,0x1100c000,0x00004000);
-	else               vtlb_MapBlock  (vuRegs[1].Mem,     0x1100c000,0x00004000);
+	else               vtlb_MapBlock  (vuRegs[1].Mem,     0x1100c000,0x00004000, 0);
 }
 
 static void memMapPhy(void)
 {
 	// Main memory
-	vtlb_MapBlock(eeMem->Main,	0x00000000,Ps2MemSize::MainRam);//mirrored on first 256 mb ?
+	vtlb_MapBlock(eeMem->Main,	0x00000000,Ps2MemSize::MainRam, 0);//mirrored on first 256 mb ?
 	// High memory, uninstalled on the configuration we emulate
 	vtlb_MapHandler(null_handler, Ps2MemSize::MainRam, 0x10000000 - Ps2MemSize::MainRam);
 
 	// Various ROMs (all read-only)
-	vtlb_MapBlock(eeMem->ROM,	0x1fc00000, Ps2MemSize::Rom);
-	vtlb_MapBlock(eeMem->ROM1,	0x1e000000, Ps2MemSize::Rom1);
-	vtlb_MapBlock(eeMem->ROM2,	0x1e400000, Ps2MemSize::Rom2);
+	vtlb_MapBlock(eeMem->ROM,	0x1fc00000, Ps2MemSize::Rom, 0);
+	vtlb_MapBlock(eeMem->ROM1,	0x1e000000, Ps2MemSize::Rom1, 0);
+	vtlb_MapBlock(eeMem->ROM2,	0x1e400000, Ps2MemSize::Rom2, 0);
 
 	// IOP memory
 	// (used by the EE Bios Kernel during initial hardware initialization, Apps/Games
 	//  are "supposed" to use the thread-safe SIF instead.)
-	vtlb_MapBlock(iopMem->Main,0x1c000000,0x00800000);
+	vtlb_MapBlock(iopMem->Main,0x1c000000,0x00800000, 0);
 
 	// Generic Handlers; These fallback to mem* stuff...
 	vtlb_MapHandler(tlb_fallback_7,0x14000000, _64kb);

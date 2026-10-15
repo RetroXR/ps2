@@ -14,8 +14,8 @@
 #include "gs_interface.hpp"
 #include "gs_util.hpp"
 #include "shaders/swizzle_utils.h"
-#include "muglm/muglm_impl.hpp"
 #include "gs_registers_debug.hpp"
+#include "pgs_vertex_kernels.h"
 
 namespace ParallelGS
 {
@@ -119,9 +119,19 @@ void GSInterface::set_super_sampling_rate(SuperSampling super_sampling,
 			sampling_rate_y_log2 = 3;
 		}
 		break;
+
+	case SuperSampling::X32:
+		// Ordered 4x8: four columns of samples across, eight rows down.
+		// Feeds a 4x scanout of a field-rendered game at the full field
+		// height, and a 4x scanout of a progressive one with two rows
+		// of samples per output row.
+		sampling_rate_x_log2 = 2;
+		sampling_rate_y_log2 = 3;
+		break;
 	}
 
-	renderer.invalidate_super_sampling_state(sampling_rate_x_log2, sampling_rate_y_log2);
+	super_sampled_copies = sampling_rate_y_log2 != 0 && !super_sampled_textures;
+	renderer.invalidate_super_sampling_state(sampling_rate_x_log2, sampling_rate_y_log2, super_sampled_copies);
 }
 
 static bool write_mask_is_16bit_channel_slice(uint32_t psm, uint32_t color_mask)
@@ -154,7 +164,15 @@ void GSInterface::flush_render_pass(FlushReason reason)
 
 		uint32_t binning_cost = 0;
 
-		for (uint32_t i = 0; i < render_pass.num_instances; i++)
+		// It's possible the last RP instance was added, but there are no primitives yet, since
+		// we ended up flushing before we could expand the BB: its BB is still the empty one,
+		// and no size is taken from it.
+		rp.num_instances = render_pass.num_instances;
+		if (render_pass.instances[rp.num_instances - 1].bb.z < 0)
+			rp.num_instances--;
+		assert(rp.num_instances);
+
+		for (uint32_t i = 0; i < rp.num_instances; i++)
 		{
 			auto &inst = render_pass.instances[i];
 			uint32_t tile_width = ((inst.bb.z - inst.bb.x) >> PGS_FB_SWIZZLE_WIDTH_LOG2) + 1;
@@ -175,7 +193,7 @@ void GSInterface::flush_render_pass(FlushReason reason)
 		if (sampling_rate_y_log2 != 0 && rp.coarse_tile_size_log2 > 3)
 			rp.coarse_tile_size_log2 -= 1;
 
-		for (uint32_t i = 0; i < render_pass.num_instances; i++)
+		for (uint32_t i = 0; i < rp.num_instances; i++)
 		{
 			auto &inst = render_pass.instances[i];
 			uint32_t coarse_tiles_width = ((inst.bb.z - inst.bb.x) >> rp.coarse_tile_size_log2) + 1;
@@ -193,13 +211,6 @@ void GSInterface::flush_render_pass(FlushReason reason)
 			}
 		}
 
-		rp.num_instances = render_pass.num_instances;
-
-		// It's possible the last RP instance was added, but there are no primitives yet, since
-		// we ended up flushing before we could expand the BB.
-		if (render_pass.instances[rp.num_instances - 1].bb.z < 0)
-			rp.num_instances--;
-		assert(rp.num_instances);
 
 		for (uint32_t i = 0; i < rp.num_instances; i++)
 		{
@@ -508,7 +519,7 @@ void GSInterface::rewrite_forwarded_clut_upload(
 			return;
 		if (pos2.pos.x != 0 || pos2.pos.y != PGS_SUBPIXELS)
 			return;
-		if (pos3.pos.x <= 7 * PGS_SUBPIXEL_BITS || pos3.pos.y != PGS_SUBPIXELS)
+		if (pos3.pos.x <= 7 * PGS_SUBPIXELS || pos3.pos.y != PGS_SUBPIXELS)
 			return;
 
 		auto &attr0 = render_pass.attributes[3 * render_pass.primitive_count - 5];
@@ -528,14 +539,16 @@ void GSInterface::rewrite_forwarded_clut_upload(
 		if ((attr0.uv.x & (PGS_SUBPIXELS - 1)))
 			return;
 
+		// Only a 32-bit palette source is forwarded; anything else leaves
+		// the upload as it came.
+		uint32_t tex_index = prim_a.tex & ((1u << TEX_TEXTURE_INDEX_BITS) - 1u);
+		if (render_pass.tex0_infos[tex_index].PSM != PSMCT32)
+			return;
+
 		// Rewrite the upload.
 		upload.csm2_x_scale = float(attr3.uv.x - attr0.uv.x) / (float(pos3.pos.x) + 8 * PGS_SUBPIXELS);
 		upload.csm2_x_bias = attr0.uv.x >> PGS_SUBPIXEL_BITS;
 		upload.tex0.desc.CSM = TEX0Bits::CSM_LAYOUT_LINE;
-
-		uint32_t tex_index = prim_a.tex & ((1u << TEX_TEXTURE_INDEX_BITS) - 1u);
-		if (render_pass.tex0_infos[tex_index].PSM != PSMCT32)
-			return;
 
 		upload.tex0.desc.CBP = render_pass.tex0_infos[tex_index].TBP0;
 		upload.texclut.desc.CBW = render_pass.tex0_infos[tex_index].TBW;
@@ -549,8 +562,8 @@ void GSInterface::rewrite_forwarded_clut_upload(
 
 		// We won't be needing these primitives later. Rendering 1k+ primitives on one tile
 		// is a serious performance drain.
-		prim_a.bb = i16vec4(0, 0, -1, -1);
-		prim_b.bb = i16vec4(0, 0, -1, -1);
+		prim_a.bb = i16vec4{ 0, 0, -1, -1 };
+		prim_b.bb = i16vec4{ 0, 0, -1, -1 };
 	}
 }
 
@@ -851,33 +864,43 @@ void GSInterface::handle_miptbl_gen(uint32_t ctx_index)
 
 void GSInterface::shift_vertex_queue()
 {
-	// Ring-buffer feels overkill. Should lower to some straight forward SIMD moves.
 	if (vertex_queue.count == 3)
 	{
-		vertex_queue.pos[0] = vertex_queue.pos[1];
-		vertex_queue.attr[0] = vertex_queue.attr[1];
-		vertex_queue.pos[1] = vertex_queue.pos[2];
-		vertex_queue.attr[1] = vertex_queue.attr[2];
+		vertex_queue.head = vertex_queue.slot(1);
 		vertex_queue.count = 2;
 	}
 }
 
+/* The kernels address the two structs by byte offset, so the shared layout
+ * they assume is pinned here. */
+static_assert(sizeof(VertexAttribute) == PGS_ATTR_SIZE, "VertexAttribute size moved");
+static_assert(offsetof(VertexAttribute, st) == PGS_ATTR_ST_OFFSET, "attr.st moved");
+static_assert(offsetof(VertexAttribute, q) == PGS_ATTR_Q_OFFSET, "attr.q moved");
+static_assert(offsetof(VertexAttribute, fog) == PGS_ATTR_FOG_OFFSET, "attr.fog moved");
+static_assert(offsetof(VertexPosition, z) == 8, "pos.z moved");
+static_assert(sizeof(VertexPosition) == 16, "VertexPosition size moved");
+
+void GSInterface::gather_kick_regs(pgs_kick_regs &g) const
+{
+	g.st = registers.st.bits;
+	g.rgbaq = registers.rgbaq.bits;
+	g.uv = registers.uv.words[0];
+	g.fog = registers.fog.words[1] >> 24;
+	g.ofx = render_pass.ofx;
+	g.ofy = render_pass.ofy;
+}
+
 void GSInterface::vertex_kick_xyz(Reg64<XYZBits> xyz)
 {
+	pgs_kick_regs g;
+
 	shift_vertex_queue();
-	auto &pos = vertex_queue.pos[vertex_queue.count];
-	auto &attr = vertex_queue.attr[vertex_queue.count];
+	gather_kick_regs(g);
 
-	pos.pos.x = int(xyz.desc.X) - render_pass.ofx;
-	pos.pos.y = int(xyz.desc.Y) - render_pass.ofy;
-	pos.z = xyz.desc.Z;
-
-	attr.st.x = registers.st.desc.S;
-	attr.st.y = registers.st.desc.T;
-	attr.q = registers.rgbaq.desc.Q;
-	attr.rgba = registers.rgbaq.words[0];
-	attr.fog = float(registers.fog.desc.FOG);
-	attr.uv = u16vec2(registers.uv.desc.U, registers.uv.desc.V);
+	pgs_build_position_padded(&g, xyz.words[0], xyz.words[1],
+	                          &vertex_queue.pos[vertex_queue.slot(vertex_queue.count)]);
+	pgs_build_attribute(&g, float(g.fog),
+	                    &vertex_queue.attr[vertex_queue.slot(vertex_queue.count)]);
 
 	vertex_queue.count++;
 	TRACE_INDEXED("VERT", vertex_queue.count, xyz);
@@ -885,21 +908,16 @@ void GSInterface::vertex_kick_xyz(Reg64<XYZBits> xyz)
 
 void GSInterface::vertex_kick_xyzf(Reg64<XYZFBits> xyzf)
 {
+	pgs_kick_regs g;
+
 	shift_vertex_queue();
+	gather_kick_regs(g);
 
-	auto &pos = vertex_queue.pos[vertex_queue.count];
-	auto &attr = vertex_queue.attr[vertex_queue.count];
-
-	pos.pos.x = int(xyzf.desc.X) - render_pass.ofx;
-	pos.pos.y = int(xyzf.desc.Y) - render_pass.ofy;
-	pos.z = xyzf.desc.Z;
-
-	attr.st.x = registers.st.desc.S;
-	attr.st.y = registers.st.desc.T;
-	attr.q = registers.rgbaq.desc.Q;
-	attr.rgba = registers.rgbaq.words[0];
-	attr.fog = float(xyzf.desc.F);
-	attr.uv = u16vec2(registers.uv.desc.U, registers.uv.desc.V);
+	/* XYZF2 carries Z in 24 bits and fog in the top byte of the same word. */
+	pgs_build_position_padded(&g, xyzf.words[0], xyzf.words[1] & 0xffffffu,
+	                          &vertex_queue.pos[vertex_queue.slot(vertex_queue.count)]);
+	pgs_build_attribute(&g, float(xyzf.words[1] >> 24),
+	                    &vertex_queue.attr[vertex_queue.slot(vertex_queue.count)]);
 
 	vertex_queue.count++;
 	TRACE_INDEXED("VERT", vertex_queue.count, xyzf);
@@ -991,6 +1009,9 @@ void GSInterface::check_frame_buffer_state()
 			}
 			else
 			{
+				// The pass starts over from its last instance; the frame
+				// and Z set below replace what that held.
+				render_pass.current_instance = render_pass.num_instances - 1;
 				flush_pending_transfer(true);
 				tracker.flush_render_pass(FlushReason::FBPointer);
 			}
@@ -1383,11 +1404,11 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 			{
 				// If the BB and UV_BB are very far part, over a page's worth, we are probably relying on proper feedback
 				// and not a simple warp effect.
-				ivec4 hazard_bb(
-						std::max<int>(uv_bb.x, bb.x),
+				ivec4 hazard_bb = {
+					std::max<int>(uv_bb.x, bb.x),
 						std::max<int>(uv_bb.y, bb.y),
 						std::min<int>(uv_bb.z, bb.z),
-						std::min<int>(uv_bb.w, bb.w));
+						std::min<int>(uv_bb.w, bb.w) };
 
 				long_term_cache_texture = (hazard_bb.z + 64 < hazard_bb.x) || (hazard_bb.w + 64 < hazard_bb.y);
 			}
@@ -1414,17 +1435,17 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 		}
 		else if (desc.clamp.desc.WMS == CLAMPBits::REGION_CLAMP && desc.clamp.desc.WMT == CLAMPBits::REGION_CLAMP)
 		{
-			ivec4 clamped_uv_bb(
+			ivec4 clamped_uv_bb = {
 					int(desc.clamp.desc.MINU),
 					int(desc.clamp.desc.MINV),
 					int(desc.clamp.desc.MAXU),
-					int(desc.clamp.desc.MAXV));
+					int(desc.clamp.desc.MAXV) };
 
-			ivec4 hazard_bb(
+			ivec4 hazard_bb = {
 					std::max<int>(clamped_uv_bb.x, bb.x),
 					std::max<int>(clamped_uv_bb.y, bb.y),
 					std::min<int>(clamped_uv_bb.z, bb.z),
-					std::min<int>(clamped_uv_bb.w, bb.w));
+					std::min<int>(clamped_uv_bb.w, bb.w) };
 
 			long_term_cache_texture = hazard_bb.x > hazard_bb.z || hazard_bb.y > hazard_bb.w;
 		}
@@ -1433,11 +1454,11 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 			if (render_pass.last_triangle_is_parallelogram_candidate)
 			{
 				// Questionable heuristic. If it looks like we're going to be rendering sprites, be a bit more aggressive.
-				ivec4 hazard_bb(
-						std::max<int>(uv_bb.x, bb.x),
+				ivec4 hazard_bb = {
+					std::max<int>(uv_bb.x, bb.x),
 						std::max<int>(uv_bb.y, bb.y),
 						std::min<int>(uv_bb.z, bb.z),
-						std::min<int>(uv_bb.w, bb.w));
+						std::min<int>(uv_bb.w, bb.w) };
 
 				long_term_cache_texture = hazard_bb.x > hazard_bb.z || hazard_bb.y > hazard_bb.w;
 			}
@@ -1601,7 +1622,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 	// This is mostly only useful in:
 	// - Correctly resolving per-pixel effects which use some form of pixel testing.
 	// - Preserving per sample data during blit passes, etc.
-	if (desc.rect.levels == 1 && super_sampled_textures &&
+	if (desc.rect.levels == 1 && (super_sampled_textures || super_sampled_copies) &&
 	    get_bits_per_pixel(desc.tex0.desc.PSM) >= 8 &&
 	    PRIMType(prim.desc.PRIM) == PRIMType::Sprite &&
 	    tracker.texture_may_super_sample(state_tracker.tex.page_rects[0]))
@@ -1713,7 +1734,7 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 			// They will generally be invalidated when it's overwritten by a copy or FB write.
 			if (long_term_cache_texture)
 			{
-				if (desc.rect.levels == 1 &&
+				if (desc.samples == 1 && desc.rect.levels == 1 &&
 				    state_tracker.tex.page_rects[0].page_width == 1 &&
 				    state_tracker.tex.page_rects[0].page_height == 1)
 				{
@@ -1722,15 +1743,13 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 				else
 					state_tracker.last_cpu_compatible_cache_TBP0 = UINT32_MAX;
 
-				// CPU upload is not possible if we hit SSAA texture path.
-				if (desc.samples == 1)
+				// Super-sampled textures also need cache invalidation and WAR tracking.
+				// The tracker only promotes single-sampled images to CPU uploads.
+				if (tracker.register_cached_texture(state_tracker.tex.page_rects, desc.rect.levels,
+				                                   csa_mask, render_pass.clut_instance,
+				                                   hasher.get(), image) == PageTracker::UploadStrategy::CPU)
 				{
-					if (tracker.register_cached_texture(state_tracker.tex.page_rects, desc.rect.levels,
-																csa_mask, render_pass.clut_instance,
-																hasher.get(), image) == PageTracker::UploadStrategy::CPU)
-					{
-						renderer.promote_cached_texture_upload_cpu(state_tracker.tex.page_rects[0]);
-					}
+					renderer.promote_cached_texture_upload_cpu(state_tracker.tex.page_rects[0]);
 				}
 			}
 			else
@@ -1762,9 +1781,9 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 
 		TextureInfo info = {};
 		info.view = &image->get_view();
-		info.info.sizes = vec4(float(width), float(height),
-							   1.0f / float(info.view->get_view_width()),
-							   1.0f / float(info.view->get_view_height()));
+		info.info.sizes = vec4{ float(width), float(height),
+		                        1.0f / float(info.view->get_view_width()),
+		                        1.0f / float(info.view->get_view_height()) };
 
 		if (uint32_t(desc.clamp.desc.WMS) == CLAMPBits::CLAMP)
 		{
@@ -1796,8 +1815,12 @@ uint32_t GSInterface::drawing_kick_update_texture(FBFeedbackMode feedback_mode, 
 		if (info.info.arrayed)
 			render_pass.tex_infos_has_super_samples = true;
 
-		// Common pattern for esoteric channel re-mapping. Don't try to be clever here. Force sample mapping.
-		if (info.info.arrayed && is_palette_format(psm) && desc.clamp.desc.has_region_repeat())
+		// A palette texture's texels are indices, bytes of memory rather than
+		// colours: in an 8- or 4-bit view of what was drawn at 32 bits, the
+		// texel beside one is another channel or another pixel, so blending or
+		// resampling across texels mixes bytes that do not belong together.
+		// Sample k of the texel is sample k of the byte, so read that one.
+		if (info.info.arrayed && is_palette_format(psm))
 			info.info.flags |= TEX_INFO_FORCE_SAMPLE_MAPPING;
 
 		render_pass.tex_infos.push_back(info);
@@ -1987,6 +2010,20 @@ void GSInterface::drawing_kick_update_state(FBFeedbackMode feedback_mode, const 
 		p.state |= 1u << STATE_BIT_IIP;
 	if (prim.desc.FIX)
 		p.state |= 1u << STATE_BIT_FIX;
+
+	/* Everything in the per-primitive record that a state change decides.
+	 * The bounding box and the topology bits are the primitive's own and
+	 * are filled in at the kick. */
+	{
+		auto &base = state_tracker.prim_attr_base;
+		base.tex = p.tex;
+		base.tex2 = p.tex2;
+		base.state = p.state;
+		base.fbmsk = ctx.frame.desc.FBMSK;
+		base.fogcol = registers.fogcol.words[0];
+		base.alpha = (ctx.alpha.desc.FIX << ALPHA_AFIX_OFFSET) |
+		             (ctx.test.desc.AREF << ALPHA_AREF_OFFSET);
+	}
 }
 
 PageRect GSInterface::compute_fb_rect() const
@@ -1995,7 +2032,10 @@ PageRect GSInterface::compute_fb_rect() const
 	// We know this BB is not degenerate already.
 	assert(inst.bb.x <= inst.bb.z);
 	assert(inst.bb.y <= inst.bb.w);
-	auto bb_page = inst.bb >> ivec2(inst.fb_page_width_log2, inst.fb_page_height_log2).xyxy();
+	ivec4 bb_page = { inst.bb.x >> int32_t(inst.fb_page_width_log2),
+	                  inst.bb.y >> int32_t(inst.fb_page_height_log2),
+	                  inst.bb.z >> int32_t(inst.fb_page_width_log2),
+	                  inst.bb.w >> int32_t(inst.fb_page_height_log2) };
 
 	PageRect page = {};
 
@@ -2028,7 +2068,10 @@ PageRect GSInterface::compute_z_rect() const
 	// We know this BB is not degenerate already.
 	assert(inst.bb.x <= inst.bb.z);
 	assert(inst.bb.y <= inst.bb.w);
-	auto bb_page = inst.bb >> ivec2(inst.z_page_width_log2, inst.z_page_height_log2).xyxy();
+	ivec4 bb_page = { inst.bb.x >> int32_t(inst.z_page_width_log2),
+	                  inst.bb.y >> int32_t(inst.z_page_height_log2),
+	                  inst.bb.z >> int32_t(inst.z_page_width_log2),
+	                  inst.bb.w >> int32_t(inst.z_page_height_log2) };
 
 	PageRect page = {};
 
@@ -2328,6 +2371,8 @@ void GSInterface::update_color_feedback_state()
 	}
 }
 
+#define PGS_UV_CLAMP(v) ((v) < INT32_MIN / 2 ? INT32_MIN / 2 : (v) > INT32_MAX / 2 ? INT32_MAX / 2 : (v))
+
 template <bool quad, unsigned num_vertices, bool conservative>
 static void compute_uv_bb(const VertexAttribute *attr, const ContextState &ctx, const PRIMBits &prim, ivec4 &uv_bb,
                           ivec2 *uvs, bool *needs_perspective)
@@ -2345,10 +2390,10 @@ static void compute_uv_bb(const VertexAttribute *attr, const ContextState &ctx, 
 
 	if (prim.FST)
 	{
-		uvs[0] = ivec2(attr[0].uv);
-		uvs[1] = ivec2(attr[1].uv);
+		uvs[0] = ivec2{ int32_t(attr[0].uv.x), int32_t(attr[0].uv.y) };
+		uvs[1] = ivec2{ int32_t(attr[1].uv.x), int32_t(attr[1].uv.y) };
 		if (!quad)
-			uvs[2] = ivec2(attr[2].uv);
+			uvs[2] = ivec2{ int32_t(attr[2].uv.x), int32_t(attr[2].uv.y) };
 	}
 	else
 	{
@@ -2358,24 +2403,53 @@ static void compute_uv_bb(const VertexAttribute *attr, const ContextState &ctx, 
 			if (attr[0].q != attr[1].q || attr[1].q != attr[2].q)
 				*needs_perspective = true;
 
+		// No texel bound can be computed from a Q of zero or NaN, so
+		// none is claimed. The widest box sends every consumer down its
+		// conservative branch -- REGION_CLAMP is not promoted and pixel
+		// feedback is refused -- which is the honest answer, and a
+		// vertex with a degenerate Q is certainly not the flat-Q 1:1
+		// mapping the feedback path is looking for.
+		if (!pgs_q_is_usable(attr[0].q) || !pgs_q_is_usable(attr[1].q) ||
+		    (!quad && !pgs_q_is_usable(attr[2].q)))
+		{
+			if (needs_perspective)
+				*needs_perspective = true;
+			uv_bb = ivec4{ INT32_MIN / 2, INT32_MIN / 2, INT32_MAX / 2, INT32_MAX / 2 };
+			return;
+		}
+
+		// A usable Q still leaves S/Q free to land past what an int32
+		// holds, so the conversions saturate, and then clamp to the range
+		// the widest box above uses: what is added to them and taken from
+		// them below stays inside an int32.
 		float inv_q0 = 1.0f / attr[0].q;
 		float inv_q1 = 1.0f / attr[1].q;
-		uvs[0] = ivec2(vec2(fwidth, fheight) * (attr[0].st * inv_q0));
-		uvs[1] = ivec2(vec2(fwidth, fheight) * (attr[1].st * inv_q1));
+		uvs[0] = ivec2{ pgs_f32_to_i32_sat(fwidth * (attr[0].st.x * inv_q0)),
+		                pgs_f32_to_i32_sat(fheight * (attr[0].st.y * inv_q0)) };
+		uvs[1] = ivec2{ pgs_f32_to_i32_sat(fwidth * (attr[1].st.x * inv_q1)),
+		                pgs_f32_to_i32_sat(fheight * (attr[1].st.y * inv_q1)) };
 
 		if (!quad)
 		{
 			float inv_q2 = 1.0f / attr[2].q;
-			uvs[2] = ivec2(vec2(fwidth, fheight) * (attr[2].st * inv_q2));
+			uvs[2] = ivec2{ pgs_f32_to_i32_sat(fwidth * (attr[2].st.x * inv_q2)),
+			                pgs_f32_to_i32_sat(fheight * (attr[2].st.y * inv_q2)) };
+		}
+
+		for (unsigned k = 0; k < (quad ? 2u : 3u); k++)
+		{
+			uvs[k].x = PGS_UV_CLAMP(uvs[k].x);
+			uvs[k].y = PGS_UV_CLAMP(uvs[k].y);
 		}
 	}
 
-	ivec2 uv_min = min(uvs[0], uvs[1]);
-	ivec2 uv_max = max(uvs[0], uvs[1]);
+	ivec2 uv_min, uv_max;
+	pgs_pair_min2(&uvs[0], &uvs[1], &uv_min);
+	pgs_pair_max2(&uvs[0], &uvs[1], &uv_max);
 	if (!quad)
 	{
-		uv_min = min(uv_min, uvs[2]);
-		uv_max = max(uv_max, uvs[2]);
+		pgs_pair_min2(&uv_min, &uvs[2], &uv_min);
+		pgs_pair_max2(&uv_max, &uvs[2], &uv_max);
 	}
 
 	if (conservative)
@@ -2383,19 +2457,22 @@ static void compute_uv_bb(const VertexAttribute *attr, const ContextState &ctx, 
 		if (ctx.tex1.desc.MMAG != 0)
 		{
 			// Consider linear filtering if using that. Expand the BB appropriately.
-			uv_min -= ivec2(1 << (PGS_SUBPIXEL_BITS - 1));
-			uv_max += ivec2((1 << (PGS_SUBPIXEL_BITS - 1)) - 1);
+			uv_min.x -= 1 << (PGS_SUBPIXEL_BITS - 1);
+			uv_min.y -= 1 << (PGS_SUBPIXEL_BITS - 1);
+			uv_max.x += (1 << (PGS_SUBPIXEL_BITS - 1)) - 1;
+			uv_max.y += (1 << (PGS_SUBPIXEL_BITS - 1)) - 1;
 		}
 		else if (!prim.FST)
 		{
 			// Consider FP rounding errors.
-			uv_min -= ivec2(1);
-			uv_max += ivec2(1);
+			uv_min.x -= 1; uv_min.y -= 1;
+			uv_max.x += 1; uv_max.y += 1;
 		}
 	}
 
 	// This can safely become a REGION_CLAMP.
-	uv_bb = ivec4(uv_min, uv_max) >> PGS_SUBPIXEL_BITS;
+	uv_bb = ivec4{ uv_min.x >> PGS_SUBPIXEL_BITS, uv_min.y >> PGS_SUBPIXEL_BITS,
+	               uv_max.x >> PGS_SUBPIXEL_BITS, uv_max.y >> PGS_SUBPIXEL_BITS };
 
 	if (!conservative)
 	{
@@ -2458,20 +2535,21 @@ GSInterface::deduce_color_feedback_mode(const VertexPosition *pos, const VertexA
 	else if (bb.w >= height)
 		return FBFeedbackMode::Sliced;
 
-	ivec2 uv0_delta = uvs[0] - pos[0].pos;
-	ivec2 uv1_delta = uvs[1] - pos[1].pos;
-	ivec2 min_delta = min(uv0_delta, uv1_delta);
-	ivec2 max_delta = max(uv0_delta, uv1_delta);
+	ivec2 uv0_delta = { uvs[0].x - pos[0].pos.x, uvs[0].y - pos[0].pos.y };
+	ivec2 uv1_delta = { uvs[1].x - pos[1].pos.x, uvs[1].y - pos[1].pos.y };
+	ivec2 min_delta, max_delta;
+	pgs_pair_min2(&uv0_delta, &uv1_delta, &min_delta);
+	pgs_pair_max2(&uv0_delta, &uv1_delta, &max_delta);
 
 	if (!quad)
 	{
-		ivec2 uv2_delta = uvs[2] - pos[2].pos;
-		min_delta = min(min_delta, uv2_delta);
-		max_delta = max(max_delta, uv2_delta);
+		ivec2 uv2_delta = { uvs[2].x - pos[2].pos.x, uvs[2].y - pos[2].pos.y };
+		pgs_pair_min2(&min_delta, &uv2_delta, &min_delta);
+		pgs_pair_max2(&max_delta, &uv2_delta, &max_delta);
 	}
 
-	int min_delta2 = min(min_delta.x, min_delta.y);
-	int max_delta2 = max(max_delta.x, max_delta.y);
+	int min_delta2 = std::min(min_delta.x, min_delta.y);
+	int max_delta2 = std::max(max_delta.x, max_delta.y);
 
 	if (ctx.tex1.desc.MMAG == TEX1Bits::LINEAR)
 	{
@@ -2502,8 +2580,8 @@ void GSInterface::drawing_kick_append()
 
 	if (num_vertices == 1)
 	{
-		pos[0] = vertex_queue.pos[vertex_queue.count - 1];
-		attr[0] = vertex_queue.attr[vertex_queue.count - 1];
+		pos[0] = vertex_queue.pos[vertex_queue.slot(vertex_queue.count - 1)];
+		attr[0] = vertex_queue.attr[vertex_queue.slot(vertex_queue.count - 1)];
 
 		// According to TJnotJT: half pixel points round up.
 		// Make use of top-left rules here to contruct a primitive
@@ -2519,41 +2597,39 @@ void GSInterface::drawing_kick_append()
 	{
 		for (uint32_t i = 0; i < num_vertices; i++)
 		{
-			pos[i] = vertex_queue.pos[vertex_queue.count - 1 - i];
-			attr[i] = vertex_queue.attr[vertex_queue.count - 1 - i];
+			pos[i] = vertex_queue.pos[vertex_queue.slot(vertex_queue.count - 1 - i)];
+			attr[i] = vertex_queue.attr[vertex_queue.slot(vertex_queue.count - 1 - i)];
 		}
 	}
 	else if (num_vertices == 3)
 	{
 		for (uint32_t i = 0; i < num_vertices; i++)
 		{
-			pos[i] = vertex_queue.pos[2 - i];
-			attr[i] = vertex_queue.attr[2 - i];
+			pos[i] = vertex_queue.pos[vertex_queue.slot(2 - i)];
+			attr[i] = vertex_queue.attr[vertex_queue.slot(2 - i)];
 		}
 	}
-
-	ivec2 lo_pos = muglm::min(pos[0].pos, pos[1].pos);
-	ivec2 hi_pos = muglm::max(pos[0].pos, pos[1].pos);
 
 	// Take into account line expansion just to be safe.
 	constexpr bool is_line = !quad && num_vertices == 2;
 
-	if (!quad && !is_line)
-	{
-		lo_pos = muglm::min(pos[2].pos, lo_pos);
-		hi_pos = muglm::max(pos[2].pos, hi_pos);
-	}
+	ivec2 lo_pos, hi_pos;
+	pgs_pair_min_max3(&pos[0].pos, &pos[1].pos, &pos[2].pos,
+	                  (!quad && !is_line) ? 1 : 0, &lo_pos, &hi_pos);
 
 	auto pre_snap_lo = lo_pos;
 	auto pre_snap_hi = hi_pos;
 
-	hi_pos -= 1;
+	hi_pos.x -= 1; hi_pos.y -= 1;
 	// Tighten the bounding box according to top-left raster rules.
 	if (!render_pass.field_aware_rendering)
-		lo_pos += (1 << int(PGS_SUBPIXEL_BITS - sampling_rate_y_log2)) - 1;
+	{
+		const int32_t snap = (1 << int(PGS_SUBPIXEL_BITS - sampling_rate_y_log2)) - 1;
+		lo_pos.x += snap; lo_pos.y += snap;
+	}
 
-	lo_pos >>= int(PGS_SUBPIXEL_BITS);
-	hi_pos >>= int(PGS_SUBPIXEL_BITS);
+	lo_pos.x >>= int(PGS_SUBPIXEL_BITS); lo_pos.y >>= int(PGS_SUBPIXEL_BITS);
+	hi_pos.x >>= int(PGS_SUBPIXEL_BITS); hi_pos.y >>= int(PGS_SUBPIXEL_BITS);
 
 	// We implement lines as a parallelogram which expand X or Y by +/- 0.5
 	// pixel or 1.0 pixel depending on AA1 mode.
@@ -2561,14 +2637,14 @@ void GSInterface::drawing_kick_append()
 	// creating some kind of "feathered" rasterization.
 	if (is_line || registers.prim.desc.enables_aa1())
 	{
-		lo_pos -= ivec2(1);
-		hi_pos += ivec2(1);
+		lo_pos.x -= 1; lo_pos.y -= 1;
+		hi_pos.x += 1; hi_pos.y += 1;
 	}
 
 	if (get_and_clear_dirty_flag(STATE_DIRTY_SCISSOR_BIT))
 	{
-		ivec2 sci_lo = ivec2(ctx.scissor.desc.SCAX0, ctx.scissor.desc.SCAY0);
-		ivec2 sci_hi = ivec2(ctx.scissor.desc.SCAX1, ctx.scissor.desc.SCAY1);
+		ivec2 sci_lo = { int32_t(ctx.scissor.desc.SCAX0), int32_t(ctx.scissor.desc.SCAY0) };
+		ivec2 sci_hi = { int32_t(ctx.scissor.desc.SCAX1), int32_t(ctx.scissor.desc.SCAY1) };
 		// This is somewhat dubious, but there's no logical reason to render outside one page's worth of width
 		// when using FBW = 0 for whatever reason. Duplicating page writes would wreak havoc.
 		render_pass.scissor_lo = sci_lo;
@@ -2578,9 +2654,8 @@ void GSInterface::drawing_kick_append()
 		render_pass.can_fb_wraparound = ctx.frame.desc.FBW != 0 && render_pass.scissor_hi_x_fb < render_pass.scissor_hi.x;
 	}
 
-	lo_pos = muglm::max(lo_pos, render_pass.scissor_lo);
-	hi_pos = muglm::min(hi_pos, render_pass.scissor_hi);
-	ivec4 bb = ivec4(lo_pos, hi_pos);
+	pgs_pair_clamp(&render_pass.scissor_lo, &render_pass.scissor_hi, &lo_pos, &hi_pos);
+	ivec4 bb = { lo_pos.x, lo_pos.y, hi_pos.x, hi_pos.y };
 
 	// Check for degenerate BB. Can happen if primitive is clipped away completely by scissor.
 	if (bb.z < bb.x || bb.w < bb.y)
@@ -2598,9 +2673,9 @@ void GSInterface::drawing_kick_append()
 		// This helps avoid a lot of false positives when doing feedback rendering with two triangles which form a quad.
 		// Also speeds up raster / binning since we only have to consider one primitive.
 
-		ivec3 order;
+		PrimOrder order;
 		is_parallelogram_candidate = triangle_is_parallelogram_candidate(
-				pos, attr, pre_snap_lo, pre_snap_hi, prim.desc, order);
+				pos, attr, &pre_snap_lo.x, &pre_snap_hi.x, prim.desc, order);
 
 		// If no state changed, try to match the parallelogram.
 		if (state_tracker.dirty_flags == 0 && is_parallelogram_candidate &&
@@ -2694,16 +2769,8 @@ void GSInterface::drawing_kick_append()
 
 	auto &fb_instance = render_pass.instances[render_pass.current_instance];
 
-	const auto &prim_state = state_tracker.prim_template;
-
 	PrimitiveAttribute prim_attr;
-	prim_attr.tex = prim_state.tex;
-	prim_attr.tex2 = prim_state.tex2;
-	prim_attr.state = prim_state.state;
-	prim_attr.fbmsk = ctx.frame.desc.FBMSK;
-	prim_attr.fogcol = registers.fogcol.words[0];
-	prim_attr.alpha = (ctx.alpha.desc.FIX << ALPHA_AFIX_OFFSET) |
-	                  (ctx.test.desc.AREF << ALPHA_AREF_OFFSET);
+	memcpy(&prim_attr, &state_tracker.prim_attr_base, sizeof(prim_attr));
 
 	if (quad)
 	{
@@ -2788,8 +2855,8 @@ void GSInterface::drawing_kick_append()
 
 			for (uint32_t i = 0; i < num_vertices; i++)
 			{
-				pos[i].pos.x += x_offset << PGS_SUBPIXEL_BITS;
-				pos[i].pos.y += y_offset << PGS_SUBPIXEL_BITS;
+				pos[i].pos.x += x_offset * (1 << PGS_SUBPIXEL_BITS);
+				pos[i].pos.y += y_offset * (1 << PGS_SUBPIXEL_BITS);
 			}
 		}
 
@@ -2838,7 +2905,7 @@ void GSInterface::drawing_kick_append()
 		}
 	}
 
-	prim_attr.bb = i16vec4(bb);
+	prim_attr.bb = i16vec4{ int16_t(bb.x), int16_t(bb.y), int16_t(bb.z), int16_t(bb.w) };
 
 	TRACE("Primitive", prim_attr);
 	TRACE("DRAW", render_pass.primitive_count);
@@ -2866,8 +2933,10 @@ void GSInterface::drawing_kick_maintain_queue()
 
 	if (fan_primitive)
 	{
-		vertex_queue.pos[1] = vertex_queue.pos[2];
-		vertex_queue.attr[1] = vertex_queue.attr[2];
+		/* The fan origin is the oldest entry and has to survive, so the
+		 * head stays put and the middle vertex is the one overwritten. */
+		vertex_queue.pos[vertex_queue.slot(1)] = vertex_queue.pos[vertex_queue.slot(2)];
+		vertex_queue.attr[vertex_queue.slot(1)] = vertex_queue.attr[vertex_queue.slot(2)];
 		vertex_queue.count = 2;
 	}
 	else if (list_primitive)
@@ -2967,6 +3036,7 @@ void GSInterface::post_draw_kick_handler()
 void GSInterface::reset_vertex_queue()
 {
 	vertex_queue.count = 0;
+	vertex_queue.head = 0;
 }
 
 template <int CTX>
@@ -3269,10 +3339,12 @@ void GSInterface::init_transfer()
 	}
 	else if (XDIR == HOST_TO_LOCAL)
 	{
+		// Whole 64-bit words, the last one holding the end of the last
+		// pixel: a transfer is not complete, and is not read, before it.
 		transfer_state.required_qwords =
 				(transfer_state.copy.trxreg.desc.RRW *
 				transfer_state.copy.trxreg.desc.RRH *
-				get_bits_per_pixel(transfer_state.copy.bitbltbuf.desc.DPSM)) / 64;
+				get_bits_per_pixel(transfer_state.copy.bitbltbuf.desc.DPSM) + 63) / 64;
 
 		transfer_state.host_to_local_active = transfer_state.required_qwords != 0;
 		transfer_state.copy.needs_shadow_vram = false;
@@ -3350,10 +3422,15 @@ void GSInterface::init_transfer()
 			PSM_DISPATCH(PSMZ16S);
 			PSM_DISPATCH(PSMT8);
 			PSM_DISPATCH(PSMT8H);
+			PSM_DISPATCH(PSMT4);
+			PSM_DISPATCH(PSMT4HL);
+			PSM_DISPATCH(PSMT4HH);
 #undef PSM_DISPATCH
 
 		default:
+			// An invalid PSM reads zeros, not a previous readback.
 			LOGW("Unrecognized FIFO readback PSM: %u\n", transfer_state.copy.bitbltbuf.desc.SPSM);
+			memset(transfer_state.fifo_readback.data(), 0, required_bytes);
 			break;
 		}
 	}
@@ -3856,6 +3933,8 @@ void GSInterface::a_d_TEXA(uint64_t payload)
 void GSInterface::a_d_FOGCOL(uint64_t payload)
 {
 	registers.fogcol.bits = payload;
+	/* The cached primitive record carries the fog colour. */
+	state_tracker.dirty_flags |= STATE_DIRTY_PRIM_TEMPLATE_BIT;
 	TRACE("FOGCOL", registers.fogcol);
 }
 
@@ -4350,6 +4429,9 @@ void GSInterface::flush()
 void GSInterface::clobber_register_state()
 {
 	state_tracker.dirty_flags = STATE_DIRTY_ALL_BITS;
+	// The vertex offset follows the context's XYOFFSET, as its writes keep it.
+	render_pass.ofx = int32_t(registers.ctx[registers.prim.desc.CTXT].xyoffset.desc.OFX);
+	render_pass.ofy = int32_t(registers.ctx[registers.prim.desc.CTXT].xyoffset.desc.OFY);
 	update_draw_handler();
 	// We don't know which path will start executing so we cannot infer anything from pending GIFTags.
 	// Defer until we receive a fresh GIFTag header.
@@ -4563,8 +4645,8 @@ void GSInterface::promote_render_pass_to_backbuffer(const RenderPass &rp)
 
 		promoted->img.reset();
 
-		ivec2 lo = ivec2(INT32_MAX);
-		ivec2 hi = ivec2(INT32_MIN);
+		ivec2 lo = { INT32_MAX, INT32_MAX };
+		ivec2 hi = { INT32_MIN, INT32_MIN };
 		bool is_valid_blit = true;
 		uint32_t promoted_tex_index = UINT32_MAX;
 
@@ -4625,20 +4707,36 @@ void GSInterface::promote_render_pass_to_backbuffer(const RenderPass &rp)
 			{
 				auto &attr0 = render_pass.attributes[3 * prim + 0];
 				auto &attr1 = render_pass.attributes[3 * prim + 1];
+
+				// The region to promote is read off these coordinates,
+				// so a Q they cannot be computed from means there is no
+				// region to promote, not a region at whatever the host
+				// happens to make of an infinity.
+				if (!pgs_q_is_usable(attr0.q) || !pgs_q_is_usable(attr1.q))
+				{
+					is_valid_blit = false;
+					break;
+				}
+
 				constexpr float rounding_epsilon = 1.0f / 1024.0f;
-				uv0 = ivec2((attr0.st / attr0.q) * rp.textures[tex_index].info.sizes.xy() + rounding_epsilon);
-				uv1 = ivec2((attr1.st / attr1.q) * rp.textures[tex_index].info.sizes.xy() + rounding_epsilon);
+				const vec4 &tsz = rp.textures[tex_index].info.sizes;
+				uv0 = ivec2{ pgs_f32_to_i32_sat((attr0.st.x / attr0.q) * tsz.x + rounding_epsilon),
+				             pgs_f32_to_i32_sat((attr0.st.y / attr0.q) * tsz.y + rounding_epsilon) };
+				uv1 = ivec2{ pgs_f32_to_i32_sat((attr1.st.x / attr1.q) * tsz.x + rounding_epsilon),
+				             pgs_f32_to_i32_sat((attr1.st.y / attr1.q) * tsz.y + rounding_epsilon) };
 			}
 			else
 			{
-				uv0 = ivec2(render_pass.attributes[3 * prim + 0].uv) >> PGS_SUBPIXEL_BITS;
-				uv1 = ivec2(render_pass.attributes[3 * prim + 1].uv) >> PGS_SUBPIXEL_BITS;
+				uv0 = ivec2{ int32_t(render_pass.attributes[3 * prim + 0].uv.x) >> PGS_SUBPIXEL_BITS,
+				             int32_t(render_pass.attributes[3 * prim + 0].uv.y) >> PGS_SUBPIXEL_BITS };
+				uv1 = ivec2{ int32_t(render_pass.attributes[3 * prim + 1].uv.x) >> PGS_SUBPIXEL_BITS,
+				             int32_t(render_pass.attributes[3 * prim + 1].uv.y) >> PGS_SUBPIXEL_BITS };
 			}
 
-			lo = muglm::min(lo, uv0);
-			lo = muglm::min(lo, uv1);
-			hi = muglm::max(hi, uv0);
-			hi = muglm::max(hi, uv1);
+			pgs_pair_min2(&lo, &uv0, &lo);
+			pgs_pair_min2(&lo, &uv1, &lo);
+			pgs_pair_max2(&hi, &uv0, &hi);
+			pgs_pair_max2(&hi, &uv1, &hi);
 		}
 
 		if (!is_valid_blit)
@@ -4667,13 +4765,17 @@ void GSInterface::promote_render_pass_to_backbuffer(const RenderPass &rp)
 			}
 		}
 
-		lo = muglm::clamp(lo, ivec2(0), ivec2(img.get_width(), img.get_height()));
-		hi = muglm::clamp(hi, ivec2(0), ivec2(img.get_width(), img.get_height()));
+		{
+			const ivec2 img_lo = { 0, 0 };
+			const ivec2 img_hi = { int32_t(img.get_width()), int32_t(img.get_height()) };
+			pgs_pair_clamp(&img_lo, &img_hi, &lo, &lo);
+			pgs_pair_clamp(&img_lo, &img_hi, &hi, &hi);
+		}
 
 		// Assume bottom-right rules leading to rounding down here.
 		// Missing a pixel is better than including too many pixels since it may contain garbage.
 
-		ivec2 extent = hi - lo;
+		ivec2 extent = { hi.x - lo.x, hi.y - lo.y };
 		if (extent.x > 0 && extent.y > 0)
 		{
 			// The cached texture has been recycled, so need to make a copy of it for later scanout.

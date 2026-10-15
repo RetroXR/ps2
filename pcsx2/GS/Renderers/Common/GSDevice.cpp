@@ -14,12 +14,14 @@
  */
 
 #include <algorithm>
+#include <type_traits>
 #include "common/Pcsx2Defs.h"
 #include <cmath>
 
 #include "common/Align.h"
 
 #include "GSDevice.h"
+#include "GSStableGroup.h"
 
 /* What the texture cache is holding, for the allocation failure message.
  * Defined in GSTextureCache.cpp; the device cannot include its header. */
@@ -77,6 +79,7 @@ const char* shaderName(ShaderConvert value)
 		case ShaderConvert::DEPTH_COPY:             return "ps_depth_copy";
 		case ShaderConvert::DOWNSAMPLE_COPY:        return "ps_downsample_copy";
 		case ShaderConvert::RGBA_TO_8I:             return "ps_convert_rgba_8i";
+		case ShaderConvert::MOVE_TEXELS:            return "ps_move_texels";
 		case ShaderConvert::CLUT_4:                 return "ps_convert_clut_4";
 		case ShaderConvert::CLUT_8:                 return "ps_convert_clut_8";
 		case ShaderConvert::YUV:                    return "ps_yuv";
@@ -201,9 +204,18 @@ void GSDevice::PrewarmPool()
 		made, (unsigned long long)(spent >> 20));
 }
 
+static void retired_present_free(void* tex)
+{
+	gs_texture_free(static_cast<GSTexture*>(tex));
+}
+
 void GSDevice::DestroyBase()
 {
 	ClearCurrent();
+
+	/* Nothing presents after this, so the retired textures go too. */
+	gs_retire_clear(&m_retired_present, retired_present_free);
+
 	PurgePool();
 }
 
@@ -330,13 +342,13 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Type type, int width, int height, i
 float GSDevice::PoolScale() const
 {
 	/* The scale the textures in this pool are actually at. The software
-	 * renderer draws at native whatever the upscale option says - it sets
-	 * m_nativeres and ignores it - and its textures are system memory, so
-	 * taking the option at face value there would reserve hundreds of
-	 * megabytes of RAM for textures that are never bigger than a PS2
-	 * frame buffer. */
+	 * renderer draws at native or at 2x, whatever larger scale the upscale
+	 * option asks for, and its textures are system memory, so taking the
+	 * option at face value there would reserve hundreds of megabytes of
+	 * RAM for textures that are never bigger than a PS2 frame buffer at
+	 * 2x. */
 	if (GetRenderAPI() == RenderAPI::None)
-		return 1.0f;
+		return GSConfig.UpscaleMultiplier >= 2.0f ? 2.0f : 1.0f;
 	return GSConfig.UpscaleMultiplier > 0.0f ? GSConfig.UpscaleMultiplier : 1.0f;
 }
 
@@ -392,21 +404,8 @@ void GSDevice::AgePool()
 	 * has since been waited through. Otherwise there is nothing to go on
 	 * but a count of presents. */
 	m_present_age++;
-	for (u32 i = 0; i < NUM_RETIRED_PRESENT_TEXTURES; i++)
-	{
-		bool done;
-		if (!m_retired_present[i])
-			continue;
-		if (m_sync_slots)
-			done = (m_sync_waits - m_retired_present_waits[i]) > m_sync_slots;
-		else
-			done = (m_present_age - m_retired_present_age[i]) > RETIRED_PRESENT_MIN_AGE;
-		if (done)
-		{
-			gs_texture_free(m_retired_present[i]);
-			m_retired_present[i] = nullptr;
-		}
-	}
+	gs_retire_age(&m_retired_present, m_present_age, m_sync_waits, m_sync_slots,
+		RETIRED_PRESENT_MIN_AGE, retired_present_free);
 	m_frame++;
 
 	/* Age is not a reason to free a texture. It was: anything unused for
@@ -497,12 +496,21 @@ void GSDevice::DrawMultiStretchRectsBase(
 	}
 }
 
+static int multi_stretch_rect_same(const void* a, const void* b)
+{
+	const GSDevice::MultiStretchRect* l = (const GSDevice::MultiStretchRect*)a;
+	const GSDevice::MultiStretchRect* r = (const GSDevice::MultiStretchRect*)b;
+	return l->src == r->src && l->linear == r->linear;
+}
+
+/* The copies from one source with one filter together, so each group is
+ * one batch, in an order that does not depend on where the sources sit
+ * in memory (GSStableGroup.h). */
 void GSDevice::SortMultiStretchRects(MultiStretchRect* rects, u32 num_rects)
 {
-	// Depending on num_rects, insertion sort may be better here.
-	std::sort(rects, rects + num_rects, [](const MultiStretchRect& lhs, const MultiStretchRect& rhs) {
-		return lhs.src < rhs.src || lhs.linear < rhs.linear;
-	});
+	static_assert(std::is_trivially_copyable<MultiStretchRect>::value,
+		"gs_stable_group moves the rects bytewise");
+	gs_stable_group(rects, num_rects, sizeof(*rects), multi_stretch_rect_same);
 }
 
 void GSDevice::ClearCurrent()
@@ -517,16 +525,14 @@ void GSDevice::ClearCurrent()
 	gs_texture_free(m_colclip_rt);
 	m_colclip_rt = nullptr;
 
-	for (u32 i = 0; i < NUM_RETIRED_PRESENT_TEXTURES; i++)
-	{
-		gs_texture_free(m_retired_present[i]);
-		m_retired_present[i] = nullptr;
-	}
-
-	gs_texture_free(m_merge);
-	gs_texture_free(m_weavebob);
-	gs_texture_free(m_blend);
-	gs_texture_free(m_mad);
+	/* The frontend may still be showing one of these: it replays the
+	 * last frame it was handed while the core is paused, and a savestate
+	 * load or a reset lands in the middle of that. They are retired like
+	 * any other present texture and freed once the frontend has moved on. */
+	RetirePresentTexture(m_merge);
+	RetirePresentTexture(m_weavebob);
+	RetirePresentTexture(m_blend);
+	RetirePresentTexture(m_mad);
 	gs_texture_free(m_target_tmp);
 
 	m_merge = nullptr;
@@ -544,13 +550,22 @@ void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, con
 	m_current = m_merge;
 }
 
-void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffset)
+/* block: the rows of one frame line in the output, the upscale. The fields
+ * weave by lines, each line the block of rows its field drew for it; a
+ * half-height field (FFMD) was stretched twice by the merge, and the shader
+ * takes the line's rows from its block there (block passed positive). */
+void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffset, float block, bool half_fields)
 {
+	if (!half_fields)
+		block = -block;
 	static int bufIdx = 0;
 	float offset = yoffset * static_cast<float>(field);
 	offset = GSConfig.DisableInterlaceOffset ? 0.0f : offset;
 
-	auto do_interlace = [this](GSTexture* sTex, GSTexture* dTex, ShaderInterlace shader, bool linear, float yoffset, int bufIdx) {
+	/* The weave and the adaptive buffer read the source with the linear
+	 * sampler: the rows the shader places between a field's rows are the
+	 * mean of the two, read at the edge between them. */
+	auto do_interlace = [this, block](GSTexture* sTex, GSTexture* dTex, ShaderInterlace shader, bool linear, float yoffset, int bufIdx) {
 		const GSVector2i ds_i = dTex->GetSize();
 		const GSVector2 ds = GSVector2(static_cast<float>(ds_i.x), static_cast<float>(ds_i.y));
 
@@ -568,7 +583,7 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 		}
 
 		const InterlaceConstantBuffer cb = {
-			GSVector4(static_cast<float>(bufIdx), 1.0f / ds.y, ds.y, MAD_SENSITIVITY)
+			GSVector4(static_cast<float>(bufIdx), 1.0f / ds.y, ds.y, block)
 		};
 
 		DoInterlace(sTex, sRect, dTex, dRect, shader, linear, cb);
@@ -578,7 +593,7 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 	{
 		case 0: // Weave
 			ResizeRenderTarget(&m_weavebob, ds.x, ds.y, true, false, true);
-			do_interlace(m_merge, m_weavebob, ShaderInterlace::WEAVE, false, offset, field);
+			do_interlace(m_merge, m_weavebob, ShaderInterlace::WEAVE, true, offset, field);
 			m_current = m_weavebob;
 			break;
 		case 1: // Bob
@@ -589,7 +604,7 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 			break;
 		case 2: // Blend
 			ResizeRenderTarget(&m_weavebob, ds.x, ds.y, true, false, true);
-			do_interlace(m_merge, m_weavebob, ShaderInterlace::WEAVE, false, offset, field);
+			do_interlace(m_merge, m_weavebob, ShaderInterlace::WEAVE, true, offset, field);
 			ResizeRenderTarget(&m_blend, ds.x, ds.y, true, false, true);
 			do_interlace(m_weavebob, m_blend, ShaderInterlace::BLEND, false, 0, 0);
 			m_current = m_blend;
@@ -600,9 +615,27 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 			bufIdx |= field;
 			bufIdx &= 3;
 			ResizeRenderTarget(&m_mad, ds.x, ds.y * 2.0f, true, false, true);
-			do_interlace(m_merge, m_mad, ShaderInterlace::MAD_BUFFER, false, offset, bufIdx);
-			ResizeRenderTarget(&m_weavebob, ds.x, ds.y, true, false, true);
-			do_interlace(m_mad, m_weavebob, ShaderInterlace::MAD_RECONSTRUCT, false, 0, bufIdx);
+			if (half_fields)
+			{
+				/* The last four fields, each whole at its own height (the merge
+				 * drew it twice as tall): the reconstruction places each at its
+				 * own lines, and a line where the picture moves takes the current
+				 * field's own rows there. */
+				const GSVector2i mad_size = m_mad->GetSize();
+				const float slot_h = static_cast<float>(mad_size.y) * 0.25f;
+				const GSVector4 sRect = GSVector4(0.0f, 0.0f, 1.0f, 1.0f);
+				const GSVector4 dRect = GSVector4(0.0f, slot_h * static_cast<float>(bufIdx), static_cast<float>(mad_size.x), slot_h * static_cast<float>(bufIdx + 1));
+				const InterlaceConstantBuffer cb = {GSVector4(static_cast<float>(bufIdx), 0.0f, 0.0f, block)};
+				DoInterlace(m_merge, sRect, m_mad, dRect, ShaderInterlace::BOB, true, cb);
+				ResizeRenderTarget(&m_weavebob, ds.x, ds.y, true, false, true);
+				do_interlace(m_mad, m_weavebob, ShaderInterlace::MAD_RECONSTRUCT, true, 0, bufIdx);
+			}
+			else
+			{
+				do_interlace(m_merge, m_mad, ShaderInterlace::MAD_BUFFER, true, offset, bufIdx);
+				ResizeRenderTarget(&m_weavebob, ds.x, ds.y, true, false, true);
+				do_interlace(m_mad, m_weavebob, ShaderInterlace::MAD_RECONSTRUCT, false, 0, bufIdx);
+			}
 			m_current = m_weavebob;
 			break;
 		default:
@@ -613,19 +646,8 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 
 void GSDevice::RetirePresentTexture(GSTexture* t)
 {
-	if (!t)
-		return;
-
-	/* The ring holds the last NUM_RETIRED_PRESENT_TEXTURES of these; what
-	 * decides when one is freed is in AgePool. Reaching the slot again
-	 * before then frees it regardless, which is the one case the ring's
-	 * size still governs. */
-	const u32 slot = m_retired_present_slot;
-	m_retired_present_slot = (slot + 1) % NUM_RETIRED_PRESENT_TEXTURES;
-	gs_texture_free(m_retired_present[slot]);
-	m_retired_present[slot] = t;
-	m_retired_present_age[slot] = m_present_age;
-	m_retired_present_waits[slot] = m_sync_waits;
+	/* Freed by AgePool once the frontend is done with it. */
+	gs_retire_add(&m_retired_present, t, m_present_age, m_sync_waits, retired_present_free);
 }
 
 bool GSDevice::ResizeRenderTarget(GSTexture** t, int w, int h, bool preserve_contents, bool recycle, bool defer_destroy)

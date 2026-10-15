@@ -7,7 +7,6 @@
 
 #include "thread_prims.hpp"
 #include "gs_registers.hpp"
-#include "muglm/muglm.hpp"
 #include "device.hpp"
 #include "image.hpp"
 #include "page_tracker.hpp"
@@ -233,7 +232,8 @@ enum class SuperSampling
 	X2 = 2,
 	X4 = 4,
 	X8 = 8,
-	X16 = 16
+	X16 = 16,
+	X32 = 32
 };
 
 struct GSOptions;
@@ -314,7 +314,7 @@ public:
 	double get_accumulated_timestamps(TimestampType type) const;
 	void set_enable_timestamps(bool enable);
 
-	void invalidate_super_sampling_state(uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2);
+	void invalidate_super_sampling_state(uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2, bool copies_only);
 
 	SuperSampling get_max_supported_super_sampling() const;
 
@@ -342,6 +342,7 @@ private:
 
 	bool last_clut_update_is_read = false;
 	bool field_aware_super_sampling = false;
+	bool super_sampled_copies_only = false;
 
 	std::vector<VkImageMemoryBarrier2> pre_image_barriers;
 	std::vector<VkImageMemoryBarrier2> post_image_barriers;
@@ -441,10 +442,20 @@ private:
 	Vulkan::Semaphore descriptor_timeline;
 	uint64_t next_descriptor_timeline_signal = 1;
 
+	// The two CRTC circuit images, kept from one vsync to the next and
+	// recreated only when their size changes. One that is handed out as
+	// the raw scanout is dropped from here, since the caller then holds it.
+	Vulkan::ImageHandle scanout_circuits[2];
+	// The field that fell out of the deinterlace ring, written next.
+	Vulkan::ImageHandle scanout_field_spare;
+	Vulkan::ImageHandle acquire_scanout_image(Vulkan::ImageHandle &slot, const Vulkan::ImageCreateInfo &info,
+	                                          std::vector<Vulkan::ImageHandle> *recycle);
+
 	void ensure_command_buffer(Vulkan::CommandBufferHandle &cmd, Vulkan::CommandBuffer::Type type);
 	void init_luts();
 	void init_phase_lut(uint32_t sampling_rate_x_log2, uint32_t sampling_rate_y_log2);
 	void init_vram(const GSOptions &options);
+	Vulkan::BufferHandle create_vram_buffer(VkDeviceSize size, bool &host_visible);
 
 	void upload_texture(const TextureUpload &upload);
 	void bind_textures(Vulkan::CommandBuffer &cmd, const RenderPass &rp);

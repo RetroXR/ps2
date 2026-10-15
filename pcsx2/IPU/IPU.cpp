@@ -58,7 +58,7 @@ alignas(16) const int non_linear_quantizer_scale[32] =
 // while the high bits come from the current byte
 __ri static u8 getBits32(u8* address)
 {
-	if (!g_BP.FillBuffer(32))
+	if (!ipu_bp_fill_buffer(&g_BP, 32))
 		return 0;
 
 	const u8* readpos = &g_BP.internal_qwc->_u8[g_BP.BP / 8];
@@ -104,6 +104,9 @@ void ipuReset(void)
 	memset(g_ipu_thresh, 0, sizeof(g_ipu_thresh));
 	memset(g_ipu_indx4, 0, sizeof(g_ipu_indx4));
 	coded_block_pattern = 0;
+	ipu_decode.mba_count  = 0;
+	ipu_decode.idec_ready = 1;
+	ipu_decode.bdec_ready = 1;
 
 	IPUCoreStatus.DataRequested = false;
 	IPUCoreStatus.WaitingOnIPUFrom= false;
@@ -116,23 +119,77 @@ void ipuReset(void)
 	ipuDmaReset();
 }
 
-bool SaveStateBase::ipuFreeze(void)
+bool ipuFreeze(SaveStateBase *s)
 {
 	// Get a report of the status of the ipu variables when saving and loading savestates.
-	if (!(FreezeTag("IPU")))
+	if (!(SaveState_FreezeTag(s, "IPU")))
 		return false;
 
-	Freeze(ipu_fifo);
+	SaveState_Freeze(s, ipu_fifo);
 
-	Freeze(g_BP);
-	Freeze(g_ipu_vqclut);
-	Freeze(g_ipu_thresh);
-	Freeze(coded_block_pattern);
-	Freeze(decoder);
-	Freeze(ipu_cmd);
-	Freeze(IPUCoreStatus);
+	SaveState_Freeze(s, g_BP);
+	SaveState_Freeze(s, g_ipu_vqclut);
+	SaveState_Freeze(s, g_ipu_thresh);
+	SaveState_Freeze(s, coded_block_pattern);
+	SaveState_Freeze(s, decoder);
+	SaveState_Freeze(s, ipu_cmd);
+	SaveState_Freeze(s, IPUCoreStatus);
 
-	return IsOkay();
+	/* Resuming a half-finished IPU command out of a state is the designed
+	 * behaviour, so all of the above is live state rather than a snapshot
+	 * of something idle -- and none of it is range-checked on the way in.
+	 * The runtime keeps every one of these in range by construction, which
+	 * is exactly why the code that consumes them does not check. */
+	if (SaveState_IsLoading(s))
+	{
+		/* The fifo positions index a 32-entry quadword buffer and are
+		 * masked only after each step, so the first use after a load is
+		 * of the restored value: the read takes 16 bytes from
+		 * &data[readpos], and the write derives its length from
+		 * 32 - writepos, which a negative position turns into a copy far
+		 * below the buffer. Both walk in quadwords, hence 28 rather
+		 * than 31 -- 31 would leave the last read straddling the end. */
+		ipu_fifo.in.readpos   &= 28;
+		ipu_fifo.in.writepos  &= 28;
+		ipu_fifo.out.readpos  &= 28;
+		ipu_fifo.out.writepos &= 28;
+
+		/* ipu_bp.h documents these ranges in the struct itself. FP
+		 * indexes internal_qwc[2] as the destination of a quadword copy,
+		 * and the loop that fills it is bounded by BP, so an oversized
+		 * pair walks FP off the end of a two-element array. IFC is what
+		 * stops that loop early. */
+		if (g_BP.FP > 2)
+			g_BP.FP = 0;
+		if (g_BP.IFC > 8)
+			g_BP.IFC = 0;
+		if (g_BP.BP >= 128)
+			g_BP.BP = 0;
+
+		/* ipu0_idx is a quadword offset from mb8 into the macroblock
+		 * buffers that follow it, and ipu_decoder_data_ptr turns it into
+		 * the source of a copy to the output fifo. The runtime only ever
+		 * sets it from the address of one of those buffers. */
+		{
+			const u32 span = (u32)((offsetof(decoder_t, rgb16)
+				+ sizeof(decoder.rgb16) - offsetof(decoder_t, mb8)) / 16);
+
+			if (decoder.ipu0_idx >= span || decoder.ipu0_data > span
+			    || decoder.ipu0_idx + decoder.ipu0_data > span)
+			{
+				decoder.ipu0_idx  = 0;
+				decoder.ipu0_data = 0;
+			}
+		}
+
+		/* index is the macroblock counter a resumed CSC picks up from,
+		 * and it is compared against a count with <, so a negative one
+		 * runs the loop billions of times. */
+		if (ipu_cmd.index < 0)
+			ipu_cmd.index = 0;
+	}
+
+	return SaveState_IsOkay(s);
 }
 
 
@@ -214,7 +271,7 @@ __fi u64 ipuRead64(u32 mem)
 			 * EE User's Manual 8.3 describes IPU_TOP as a read-time peek
 			 * of the next 32 bits that does not advance the stream, and
 			 * peeking here looks equivalent - but it is not.  getBits32
-			 * goes through g_BP.FillBuffer, which pulls quadwords out of
+			 * goes through ipu_bp_fill_buffer, which pulls quadwords out of
 			 * IPU_in_FIFO into the internal buffer (IFC down, FP up) and
 			 * can set IPUCoreStatus.WaitingOnIPUTo, requesting to-IPU
 			 * DMA.  Doing that from a register read on the EE thread,
@@ -393,7 +450,7 @@ __fi void IPUCMD_WRITE(u32 val)
 		case SCE_IPU_IDEC:
 			{
 				tIPU_CMD_IDEC _val;
-				g_BP.Advance(val & 0x3F);
+				ipu_bp_advance(&g_BP, val & 0x3F);
 				_val._u32       = val;
 				ipuIDEC(_val);
 				ipuRegs.topbusy = 0x80000000;
@@ -403,7 +460,7 @@ __fi void IPUCMD_WRITE(u32 val)
 		case SCE_IPU_BDEC:
 			{
 				tIPU_CMD_BDEC _val;
-				g_BP.Advance(val & 0x3F);
+				ipu_bp_advance(&g_BP, val & 0x3F);
 				_val._u32       = val;
 				ipuBDEC(_val);
 				ipuRegs.topbusy = 0x80000000;
@@ -412,13 +469,13 @@ __fi void IPUCMD_WRITE(u32 val)
 
 		case SCE_IPU_VDEC:
 		case SCE_IPU_FDEC:
-			g_BP.Advance(val & 0x3F);
+			ipu_bp_advance(&g_BP, val & 0x3F);
 			ipuRegs.cmd.BUSY = 0x80000000;
 			ipuRegs.topbusy  = 0x80000000;
 			break;
 
 		case SCE_IPU_SETIQ:
-			g_BP.Advance(val & 0x3F);
+			ipu_bp_advance(&g_BP, val & 0x3F);
 			break;
 
 		case SCE_IPU_SETVQ:

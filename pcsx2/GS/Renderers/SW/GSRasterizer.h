@@ -196,8 +196,6 @@ public:
 	int vertex_count;
 	u16* index;
 	int index_count;
-	u64 start;
-	int counter;
 	u8 scanmsk_value;
 
 	GSScanlineGlobalData global;
@@ -215,7 +213,6 @@ public:
 		, vertex_count(0)
 		, index(NULL)
 		, index_count(0)
-		, start(0)
 		, scanmsk_value(0)
 	{
 	}
@@ -240,7 +237,6 @@ protected:
 	GSVector4 m_fscissor_x;
 	GSVector4 m_fscissor_y;
 	struct { GSVertexSW* buff; int count; } m_edge;
-	struct { int sum, actual, total; } m_pixels;
 
 	// For the current draw.
 	GSScanlineLocalData m_local = {};
@@ -253,6 +249,8 @@ protected:
 	template <bool scissor_test>
 	void DrawPoint(const GSVertexSW* vertex, int vertex_count, const u16* index, int index_count);
 	void DrawLine(const GSVertexSW* vertex, const u16* index);
+	void DrawLineImpl(const GSVertexSW* vertex, const u16* index);
+	void DrawPoint2x(const GSVertexSW* vertex, const u16* index);
 	void DrawTriangle(const GSVertexSW* vertex, const u16* index);
 	void DrawSprite(const GSVertexSW* vertex, const u16* index);
 
@@ -279,7 +277,6 @@ public:
 	__forceinline int FindMyNextScanline(int top) const;
 
 	void Draw(GSRasterizerData& data);
-	int GetPixels(bool reset);
 };
 
 class IRasterizer : public GSVirtualAlignedClass<32>
@@ -290,7 +287,6 @@ public:
 	virtual void Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& data) = 0;
 	virtual void Sync() = 0;
 	virtual bool IsSynced() const = 0;
-	virtual int GetPixels(bool reset = true) = 0;
 };
 
 class GSSingleRasterizer final : public IRasterizer
@@ -302,7 +298,6 @@ public:
 	void Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& data) override;
 	void Sync() override;
 	bool IsSynced() const override;
-	int GetPixels(bool reset = true) override;
 
 	void Draw(GSRasterizerData& data);
 
@@ -339,7 +334,6 @@ public:
 	void Queue(const GSRingHeap::SharedPtr<GSRasterizerData>& data) override;
 	void Sync() override;
 	bool IsSynced() const override;
-	int GetPixels(bool reset) override;
 };
 
 MULTI_ISA_UNSHARED_END

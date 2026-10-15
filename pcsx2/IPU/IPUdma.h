@@ -15,17 +15,13 @@
 
 #pragma once
 
+#include "ipu_status.h"
+
 #include "IPU.h"
 
 struct IPUDMAStatus {
 	bool InProgress;
 	bool DMAFinished;
-};
-
-struct IPUStatus {
-	bool DataRequested;
-	bool WaitingOnIPUFrom;
-	bool WaitingOnIPUTo;
 };
 
 extern void ipu0Interrupt();
@@ -37,4 +33,3 @@ extern void IPU0dma();
 extern void IPU1dma();
 
 extern void ipuDmaReset();
-extern IPUStatus IPUCoreStatus;

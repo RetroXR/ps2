@@ -15,36 +15,40 @@
 
 #pragma once
 
-#include "../SaveState.h"
 #include "../IopCounters.h"
+#include "../FreezeTypes.h"
 
-struct Pcsx2Config;
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-namespace SPU2
-{
-	/// Initialization/cleanup, call at process startup/shutdown.
-	void Initialize(void);
-	void Shutdown(void);
+/* Process startup and shutdown. */
+void SPU2_Initialize(void);
+void SPU2_Shutdown(void);
 
-	/// Open/close, call at VM startup/shutdown.
-	void Open(void);
-	void Close(void);
+/* VM startup and shutdown. */
+void SPU2_Open(void);
+void SPU2_Close(void);
 
-	/// Reset, rebooting VM or going into PSX mode.
-	void Reset(bool psxmode);
+/* Rebooting the VM, or entering PSX mode. */
+void SPU2_Reset(bool psxmode);
 
-	/// Returns true if we're currently running in PSX mode.
-	bool IsRunningPSXMode(void);
-}
+/* Whether the core is in PSX mode. */
+bool SPU2_IsRunningPSXMode(void);
+
+/* The savestate entry point. */
+s32 SPU2freeze(FreezeAction mode, freezeData *data);
 
 void SPU2write(u32 mem, u16 value);
 u16 SPU2read(u32 mem);
 
-s32 SPU2freeze(FreezeAction mode, freezeData* data);
-
 extern u32 lClocks;
-typedef void RegWriteHandler(u16 value);
+typedef void RegWriteHandler(u32 arg, u16 value);
 extern RegWriteHandler* const tbl_reg_writes[0x401];
+extern const u16 tbl_reg_args[0x401];
 
 extern void TimeUpdate(u64 cClocks);
 
+#ifdef __cplusplus
+}
+#endif

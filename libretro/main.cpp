@@ -5,7 +5,8 @@
 #include <retro_atomic.h>
 #include <faulthandler.h>
 #include "common/Pcsx2Defs.h"
-#include <retro_spsc.h>
+#include "audio_queue.h"
+#include "state_ext.h"
 
 #include <cstdint>
 #include <libretro.h>
@@ -108,7 +109,7 @@ static void cpu_thread_entry_trampoline(void* arg)
 {
 	(void)arg;
 	/* The EE is the GS ring's producer for as long as this thread lives:
-	 * mtgs_wait_drains parks a producer and lets anyone else drain. Set
+	 * MTGS_WAIT_DRAINS parks a producer and lets anyone else drain. Set
 	 * here, around the entry, so every way out of it is covered; it is
 	 * ahead of the boot handshake the entry publishes, which orders it
 	 * before the frontend's first read, and cleared before the join. */
@@ -117,41 +118,22 @@ static void cpu_thread_entry_trampoline(void* arg)
 	mtgs_set_producer_thread(0);
 }
 
-/* Pause/resume coordination for cpu_thread.
+/* The EE parks on this while Paused. The predicate is the state word
+ * itself: every waker stores the new state and then notifies, and
+ * prepare/commit makes a store that lands between the EE's check and its
+ * park a wake rather than a lost one.
  *
- * When the libretro thread asks the VM to pause (savestate, reset,
- * settings change), cpu_thread eventually loops to its 'case Paused'
- * branch and used to busy-spin there waiting for the state to change
- * back. That burned 100% of one core for the entire duration of any
- * libretro-thread side activity that holds the VM paused (multi-MB
- * savestate write/read, GPU context recreate, etc.).
- *
- * Now cpu_thread sleeps on cpu_thread_cv with predicate
- * "state != Paused"; cpu_thread_resume() does the resume-side state
- * transition under the mutex and notifies. A 100 ms timeout on the
- * wait is belt-and-suspenders insurance against a missed notify - the
- * normal path is instant via notify_one(). */
-/* Counted semaphore instead of mutex+condvar: a Post is remembered, so
- * the resume side needs no lock to close the check-then-wait window -
- * if cpu_thread saw the old state and is about to Wait(), the Post
- * issued after the state store is already banked and the Wait returns
- * immediately.  Stale posts from earlier cycles are absorbed by the
- * predicate re-check loop around Wait(). */
-/* The EE parks here while Paused. An eventcount rather than a counted
- * semaphore: the predicate is the state word itself, every waker stores
- * the new state and then notifies, and prepare/commit is what makes a
- * store that lands between the EE's check and its park a wake rather
- * than a lost one -- the property the counted post used to provide. */
+ * Resumes are counted, and the EE records the count it has taken each
+ * time it sees Running. A pause waits for the EE to take the latest
+ * resume before it asks it to stop: a pause right behind a resume then
+ * stops the EE where any other pause does, at the next drained vsync
+ * (MTGSOwner.h), and not wherever it stood if its thread had not been
+ * scheduled in between. */
+static retro_atomic_int_t cpu_thread_resumes;
+static retro_atomic_int_t cpu_thread_resumes_taken;
+/* Initialised in retro_load_game, before the EE thread exists. */
 static retro_eventcount_t cpu_thread_resume_ec;
 static bool               cpu_thread_resume_ec_inited = false;
-static void cpu_thread_resume_ec_ensure(void)
-{
-	if (!cpu_thread_resume_ec_inited)
-	{
-		retro_eventcount_init(&cpu_thread_resume_ec);
-		cpu_thread_resume_ec_inited = true;
-	}
-}
 
 static freezeData fd = {};
 static std::unique_ptr<u8[]> fd_data;
@@ -181,7 +163,7 @@ static bool s_option_ilink = true;
 static std::string setting_renderer;
 static int setting_upscale_multiplier          = 1;
 static int setting_half_pixel_offset           = 0;
-static int setting_native_scaling              = 0;
+static int setting_native_scaling              = -1;
 static u8 setting_plugin_type                  = 0;
 static u8 setting_pgs_super_sampling           = 0;
 static u8 setting_pgs_high_res_scanout         = 0;
@@ -197,7 +179,6 @@ static u8 setting_blending_accuracy            = 0;
 static u8 setting_cpu_sprite_size              = 0;
 static u8 setting_cpu_sprite_level             = 0;
 static u8 setting_software_clut_render         = 0;
-static u8 setting_gpu_target_clut              = 0;
 static u8 setting_auto_flush                   = 0;
 static u8 setting_round_sprite                 = 0;
 static u8 setting_texture_inside_rt            = 0;
@@ -224,6 +205,7 @@ static bool setting_dev9_eth                   = false;
 static u32  setting_dev9_hdd_sectors           = 40u * (1024 * 1024 * 1024 / 512);
 static bool setting_enable_hw_hacks            = false;
 static bool setting_auto_flush_software        = true;
+static int setting_sw_renderer_threads         = 2;
 static bool setting_disable_depth_conversion   = false;
 static bool setting_framebuffer_conversion     = false;
 static bool setting_disable_partial_invalid    = false;
@@ -312,6 +294,8 @@ static bool update_option_visibility(void)
 		option_display.visible = setting_show_gsdx_options;
 		option_display.key     = "pcsx2_texture_filtering";
 		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+		option_display.key     = "pcsx2_upscale_multiplier";
+		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
 		updated                = true;
 	}
@@ -320,7 +304,7 @@ static bool update_option_visibility(void)
 	if (setting_show_gsdx_hw_only_options != show_gsdx_hw_only_options_prev)
 	{
 		option_display.visible = setting_show_gsdx_hw_only_options;
-		option_display.key     = "pcsx2_upscale_multiplier";
+		option_display.key     = "pcsx2_native_scaling";
 		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 		option_display.key     = "pcsx2_trilinear_filtering";
 		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
@@ -340,6 +324,8 @@ static bool update_option_visibility(void)
 	if (setting_show_gsdx_sw_only_options != show_gsdx_sw_only_options_prev)
 	{
 		option_display.visible = setting_show_gsdx_sw_only_options;
+		option_display.key     = "pcsx2_sw_renderer_threads";
+		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 		option_display.key     = "pcsx2_auto_flush_software";
 		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 
@@ -381,8 +367,6 @@ static bool update_option_visibility(void)
 		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 		option_display.key     = "pcsx2_software_clut_render";
 		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-		option_display.key     = "pcsx2_gpu_target_clut";
-		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 		option_display.key     = "pcsx2_auto_flush";
 		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 		option_display.key     = "pcsx2_texture_inside_rt";
@@ -398,8 +382,6 @@ static bool update_option_visibility(void)
 		option_display.key     = "pcsx2_preload_frame_data";
 		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 		option_display.key     = "pcsx2_half_pixel_offset";
-		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-		option_display.key     = "pcsx2_native_scaling";
 		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 		option_display.key     = "pcsx2_round_sprite";
 		environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
@@ -420,22 +402,25 @@ static bool update_option_visibility(void)
 
 static void cpu_thread_pause(void)
 {
+	while (VMManager::GetState() == VMState::Running
+		&& retro_atomic_load_acquire_int(&cpu_thread_resumes_taken)
+		!= retro_atomic_load_acquire_int(&cpu_thread_resumes))
+		MTGS::MainLoop(true);
 	VMManager::SetPaused(true);
+	mtgs_frame_gate_stop(1);
 	while((VMState)retro_atomic_load_acquire_int(&cpu_thread_state) != VMState::Paused)
 		MTGS::MainLoop(true);
 }
 
-/* Counterpart to cpu_thread_pause().  Store the new state, then Post:
- * because the semaphore counts, the post cannot be lost regardless of
- * where cpu_thread is in its check-then-wait.  Any new resume site
- * (replacing 'VMManager::SetPaused(false)' or
- * 'VMManager::SetState(VMState::Running)' that was paired with a prior
- * cpu_thread_pause) should call this instead. */
+/* Counterpart to cpu_thread_pause(): count the resume, store the new
+ * state, then notify. */
 static void cpu_thread_resume(void)
 {
+	retro_atomic_fetch_add_int(&cpu_thread_resumes, 1);
+	mtgs_frame_gate_stop(0);
 	VMManager::SetPaused(false);
-	cpu_thread_resume_ec_ensure();
-	retro_eventcount_notify(&cpu_thread_resume_ec);
+	if (cpu_thread_resume_ec_inited)
+		retro_eventcount_notify(&cpu_thread_resume_ec);
 }
 
 /* Renderer-setting helpers. The "Renderer" menu has two SW entries
@@ -548,6 +533,8 @@ static void check_variables(bool first_run)
 				setting_pgs_super_sampling = 5;
 			else if (!strcmp(var.value, "16x SSAA (ordered, can high-res 4x)"))
 				setting_pgs_super_sampling = 6;
+			else if (!strcmp(var.value, "32x SSAA (ordered, can high-res 4x full)"))
+				setting_pgs_super_sampling = 7;
 
 			if (first_run || setting_pgs_super_sampling != pgs_super_sampling_prev)
 			{
@@ -586,8 +573,13 @@ static void check_variables(bool first_run)
 		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
 		{
 			u8 pgs_high_res_scanout_prev = setting_pgs_high_res_scanout;
-			/* 0 = off, 1 = 2x, 2 = 4x, 3 = 4x anti-aliased. */
-			if (!strcmp(var.value, "enabled (4x, anti-aliased)"))
+			/* 0 = off, 1 = 2x, 2 = 4x, 3 = 4x anti-aliased,
+			 * 4 = 4x at the full field height, 5 = both. */
+			if (!strcmp(var.value, "enabled (4x, anti-aliased, full field height)"))
+				setting_pgs_high_res_scanout = 5;
+			else if (!strcmp(var.value, "enabled (4x, full field height)"))
+				setting_pgs_high_res_scanout = 4;
+			else if (!strcmp(var.value, "enabled (4x, anti-aliased)"))
 				setting_pgs_high_res_scanout = 3;
 			else if (!strcmp(var.value, "enabled (4x)"))
 				setting_pgs_high_res_scanout = 2;
@@ -728,7 +720,8 @@ static void check_variables(bool first_run)
 		}
 	}
 
-	if (setting_plugin_type == PLUGIN_GSDX_HW)
+	/* The software renderer draws at 2x for any of the larger scales. */
+	if (setting_plugin_type == PLUGIN_GSDX_HW || setting_plugin_type == PLUGIN_GSDX_SW)
 	{
 		var.key = "pcsx2_upscale_multiplier";
 		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -764,6 +757,34 @@ static void check_variables(bool first_run)
 				updated = true;
 			}
 #endif
+		}
+	}
+
+	if (setting_plugin_type == PLUGIN_GSDX_HW)
+	{
+		/* Native scaling is read with the resolution, not with the hacks:
+		 * a value the user sets applies whether or not the hacks are
+		 * enabled, over the game database's fix; 'Automatic' (-1) leaves
+		 * it to the database. */
+		var.key = "pcsx2_native_scaling";
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+		{
+			int native_scaling_prev = setting_native_scaling;
+			if (!strcmp(var.value, "disabled"))
+				setting_native_scaling = GSNativeScaling::NativeScaling_Off;
+			else if (!strcmp(var.value, "Normal"))
+				setting_native_scaling = GSNativeScaling::NativeScaling_Normal;
+			else if (!strcmp(var.value, "Aggressive"))
+				setting_native_scaling = GSNativeScaling::NativeScaling_Aggressive;
+			else
+				setting_native_scaling = -1;
+
+			if (first_run || setting_native_scaling != native_scaling_prev)
+			{
+				s_option_config.GS.NativeScalingSet = setting_native_scaling >= 0;
+				s_option_config.GS.UserHacks_NativeScaling = static_cast<decltype(s_option_config.GS.UserHacks_NativeScaling)>(setting_native_scaling >= 0 ? setting_native_scaling : (int)GSNativeScaling::NativeScaling_Normal);
+				updated = true;
+			}
 		}
 
 		var.key = "pcsx2_trilinear_filtering";
@@ -907,24 +928,6 @@ static void check_variables(bool first_run)
 				}
 			}
 
-			var.key = "pcsx2_gpu_target_clut";
-			if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-			{
-				u8 gpu_target_clut_prev = setting_gpu_target_clut;
-				if (!strcmp(var.value, "disabled"))
-					setting_gpu_target_clut = (u8)GSGPUTargetCLUTMode::Disabled;
-				else if (!strcmp(var.value, "Exact Match"))
-					setting_gpu_target_clut = (u8)GSGPUTargetCLUTMode::Enabled;
-				else if (!strcmp(var.value, "Check Inside Target"))
-					setting_gpu_target_clut = (u8)GSGPUTargetCLUTMode::InsideTarget;
-
-				if (first_run || setting_gpu_target_clut != gpu_target_clut_prev)
-				{
-					s_option_config.GS.UserHacks_GPUTargetCLUTMode = static_cast<decltype(s_option_config.GS.UserHacks_GPUTargetCLUTMode)>(setting_gpu_target_clut);
-					updated = true;
-				}
-			}
-
 			var.key = "pcsx2_auto_flush";
 			if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
 			{
@@ -1052,24 +1055,6 @@ static void check_variables(bool first_run)
 				}
 			}
 
-			var.key = "pcsx2_native_scaling";
-			if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-			{
-				int native_scaling_prev = setting_native_scaling;
-				if (!strcmp(var.value, "disabled"))
-					setting_native_scaling = GSNativeScaling::NativeScaling_Off;
-				else if (!strcmp(var.value, "Normal"))
-					setting_native_scaling = GSNativeScaling::NativeScaling_Normal;
-				else if (!strcmp(var.value, "Aggressive"))
-					setting_native_scaling = GSNativeScaling::NativeScaling_Aggressive;
-
-				if (first_run || setting_native_scaling != native_scaling_prev)
-				{
-					s_option_config.GS.UserHacks_NativeScaling = static_cast<decltype(s_option_config.GS.UserHacks_NativeScaling)>(setting_native_scaling);
-					updated = true;
-				}
-			}
-
 			var.key = "pcsx2_round_sprite";
 			if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
 			{
@@ -1144,6 +1129,27 @@ static void check_variables(bool first_run)
 
 	if (setting_plugin_type == PLUGIN_GSDX_SW)
 	{
+		var.key = "pcsx2_sw_renderer_threads";
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+		{
+			int sw_renderer_threads_prev = setting_sw_renderer_threads;
+			int sw_renderer_threads      = atoi(var.value);
+
+			/* SWExtraThreads is a u16: clamp before the narrowing cast so
+			 * a stray negative value cannot wrap into thousands of threads. */
+			if (sw_renderer_threads < 0)
+				sw_renderer_threads = 0;
+			else if (sw_renderer_threads > 11)
+				sw_renderer_threads = 11;
+			setting_sw_renderer_threads = sw_renderer_threads;
+
+			if (first_run || setting_sw_renderer_threads != sw_renderer_threads_prev)
+			{
+				s_option_config.GS.SWExtraThreads = (u16)setting_sw_renderer_threads;
+				updated = true;
+			}
+		}
+
 		var.key = "pcsx2_auto_flush_software";
 		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
 		{
@@ -1605,168 +1611,10 @@ void vk_libretro_set_hwrender_interface(retro_hw_render_interface_vulkan *hw_ren
 
 void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { batch_cb = cb; }
 void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
-/* The core only ever uses batch_cb (audio is queued in bulk via
- * upload_output_audio_buffer at end-of-frame). The libretro API still
- * requires this symbol to exist, so accept the callback and discard. */
+/* The core only ever uses batch_cb (audio_queue.h). The libretro API
+ * still requires this symbol to exist, so accept the callback and
+ * discard. */
 void retro_set_audio_sample(retro_audio_sample_t /*cb*/) { }
-
-/* Audio output buffer.
- *
- * SPU2 writes stereo int16 samples directly into this buffer during
- * retro_run() via the reserve/commit pair below. One bulk batch_cb()
- * upload happens at the end of retro_run().
- *
- * Threading: SPU2 (cpu_thread) produces, upload_output_audio_buffer
- * (libretro thread) consumes.  The MTGS vsync barrier serializes them
- * in the steady state but NOT during boot/loads or whenever the EE
- * runs ahead of retro_run (TSan: commit racing the end-of-frame
- * upload).  The handoff is a retro_spsc byte queue - lock-free SPSC
- * with release/acquire cursors, no mutex anywhere near SPU2 timing
- * paths.  retro_audio_reserve hands SPU2 a pointer into a
- * producer-PRIVATE staging array (cpu_thread only, no sync), and
- * retro_audio_commit publishes the filled samples with one
- * retro_spsc_write.  The consumer drains in bounded chunks.
- *
- * Bounded by design: if the frontend stalls long enough to fill about
- * 1.3 s of audio, further chunks are dropped (counted, logged once)
- * instead of the previous realloc-grow-without-limit. */
-#define AUDIO_SPSC_BYTES    (1 << 18) /* 256 KB = 128K int16s, ~1.37 s stereo at 48 kHz */
-#define AUDIO_STAGING_INT16 16384     /* above SPU2 SAMPLECOUNT-capped max reserve (~9.6K) */
-static retro_spsc_t audio_spsc;
-static bool         audio_spsc_ok;
-static int16_t      audio_staging[AUDIO_STAGING_INT16];       /* cpu_thread-private */
-/* Producer mode for the reserve->commit pair in flight: true when
- * reserve handed out a span inside the ring (zero-copy), false when
- * it fell back to the staging array because the contiguous span at
- * the head was smaller than the request (once per ring lap).
- * cpu_thread-private. */
-static bool         audio_reserve_in_ring;
-static uint32_t     audio_dropped_samples;
-static bool         audio_drop_logged;
-
-
-static void init_output_audio_buffer(int32_t capacity)
-{
-   (void)capacity;
-   if (!audio_spsc_ok)
-      audio_spsc_ok = retro_spsc_init(&audio_spsc, AUDIO_SPSC_BYTES);
-   audio_dropped_samples = 0;
-   audio_drop_logged     = false;
-}
-
-static void free_output_audio_buffer(void)
-{
-   /* Called with cpu_thread joined and no upload in flight. */
-   if (audio_spsc_ok)
-   {
-      retro_spsc_free(&audio_spsc);
-      audio_spsc_ok = false;
-   }
-}
-
-static void upload_output_audio_buffer(void)
-{
-   /* Feed batch_cb directly from the ring: read_begin exposes the
-    * contiguous readable span, whose region the producer cannot touch
-    * until read_end frees it.  Frame granularity (4-byte commits)
-    * keeps every span whole-frame-sized and int16-aligned.  At most
-    * two iterations per drain (wrap).  An empty frame uploads
-    * nothing - synthetic silence would break the 48 kHz contract. */
-   const void *span;
-   size_t      span_bytes;
-   if (!audio_spsc_ok)
-      return;
-   while ((span_bytes = retro_spsc_read_begin(&audio_spsc, &span)) >= 2 * sizeof(int16_t))
-   {
-      const size_t take = span_bytes & ~(size_t)(2 * sizeof(int16_t) - 1);
-      batch_cb((const int16_t*)span, take / (2 * sizeof(int16_t)));
-      retro_spsc_read_end(&audio_spsc, take);
-   }
-}
-
-/* Reserve room for `max_samples` int16s past the current write position
- * and return a writable pointer to the start of that region. The caller
- * fills as many samples as it wants up to max_samples, then calls
- * retro_audio_commit() with the actual count.
- *
- * This avoids allocating a per-call stack batch (TimeUpdate is __fi /
- * always_inline, called from many sites; a 4800-stereo stack array
- * would balloon every caller's frame) and the intermediate memcpy
- * the previous push-style API required - SPU2's Mix() now writes
- * straight into the persistent buffer. */
-
-/* Discard everything queued.  Producer (cpu_thread) must be paused;
- * drains consumer-side because retro_spsc_clear requires both sides
- * stopped. */
-static void discard_buffered_audio(void)
-{
-   /* Producer (cpu_thread) must be paused; drains consumer-side
-    * because retro_spsc_clear requires both sides stopped.  Advances
-    * the tail without copying anything. */
-   const void *span;
-   size_t      span_bytes;
-   if (!audio_spsc_ok)
-      return;
-   while ((span_bytes = retro_spsc_read_begin(&audio_spsc, &span)) != 0)
-      retro_spsc_read_end(&audio_spsc, span_bytes);
-}
-
-int16_t *retro_audio_reserve(int32_t max_samples)
-{
-   void  *span;
-   size_t span_bytes;
-   const size_t need = (size_t)max_samples * sizeof(int16_t);
-   if (max_samples > (int32_t)AUDIO_STAGING_INT16 || !audio_spsc_ok)
-      return NULL;
-   /* Common case: hand SPU2's Mix a span inside the ring itself -
-    * zero-copy end to end.  Every commit is a whole number of stereo
-    * frames (4 bytes), so head only ever advances by multiples of 4
-    * and the span is int16-aligned by construction.  Falls back to
-    * the producer-private staging array when the contiguous run to
-    * the physical end of the ring is smaller than the request, which
-    * happens at most once per ring lap (~1.3 s of audio). */
-   span_bytes = retro_spsc_write_begin(&audio_spsc, &span);
-   if (span_bytes >= need)
-   {
-      audio_reserve_in_ring = true;
-      return (int16_t*)span;
-   }
-   audio_reserve_in_ring = false;
-   return audio_staging;
-}
-
-void retro_audio_commit(int32_t samples)
-{
-   const size_t bytes = (size_t)samples * sizeof(int16_t);
-   if (!samples)
-   {
-      if (audio_reserve_in_ring)
-         retro_spsc_write_end(&audio_spsc, 0); /* abandon */
-      return;
-   }
-   if (audio_reserve_in_ring)
-   {
-      /* Mix already wrote into the ring; publishing is one
-       * release-store. */
-      retro_spsc_write_end(&audio_spsc, bytes);
-      return;
-   }
-   /* Wrap fallback: staging -> ring, retro_spsc_write handles the
-    * split copy.  Total free space can still be short if the
-    * frontend stalled past ~1.3 s of buffered audio; drop rather
-    * than grow without bound. */
-   if (retro_spsc_write_avail(&audio_spsc) < bytes)
-   {
-      audio_dropped_samples += (uint32_t)samples;
-      if (!audio_drop_logged)
-      {
-         audio_drop_logged = true;
-         log_cb(RETRO_LOG_WARN, "Audio SPSC queue full; dropping samples (frontend stalled?)\n");
-      }
-      return;
-   }
-   retro_spsc_write(&audio_spsc, audio_staging, bytes);
-}
 
 void retro_set_environment(retro_environment_t cb)
 {
@@ -1830,7 +1678,8 @@ static bool RETRO_CALLCONV set_eject_state(bool ejected)
 	 * be a problem.
 	 *
 	 * Park the EE for the swap, the way retro_serialize does for the
-	 * same reason.  Guarded on there being a VM at all, because
+	 * same reason; the next retro_run lets it go.  Guarded on there
+	 * being a VM at all, because
 	 * cpu_thread_pause waits for a thread that has to exist to answer -
 	 * a frontend may eject before content is loaded. */
 	const bool vm_live = VMManager::HasValidVM();
@@ -1855,9 +1704,6 @@ static bool RETRO_CALLCONV set_eject_state(bool ejected)
 		VMManager::ChangeDisc(CDVD_SourceType::Iso, disk_images[image_index]);
 		cdvdCtrlTrayClose();
 	}
-
-	if (vm_live)
-		cpu_thread_resume();
 
 	disk_ejected = ejected;
 	return true;
@@ -1968,7 +1814,10 @@ void retro_deinit(void)
 {
 	FWlinkDetach();
 	pcsx2_jithash_dump();
-	free_output_audio_buffer();
+	if (audio_queue_dropped)
+		log_cb(RETRO_LOG_WARN, "%u audio samples dropped: the frontend stopped taking audio\n",
+			(unsigned)audio_queue_dropped);
+	audio_queue_free();
 	// WIN32 doesn't allow canceling threads from global constructors/destructors in a shared library.
 	vu1Thread.Close();
 }
@@ -1998,7 +1847,7 @@ unsigned retro_get_region(void)
 
 void retro_get_system_av_info(retro_system_av_info* info)
 {
-	unsigned pgs_scanout_log2  = setting_pgs_high_res_scanout == 3 ? 2 : setting_pgs_high_res_scanout;
+	unsigned pgs_scanout_log2  = setting_pgs_high_res_scanout >= 3 ? 2 : setting_pgs_high_res_scanout;
 	unsigned upscale_mul       = (setting_renderer == "paraLLEl-GS" && pgs_scanout_log2) ? (1u << pgs_scanout_log2) : setting_upscale_multiplier;
 
 	switch (gsVideoMode)
@@ -2016,10 +1865,11 @@ void retro_get_system_av_info(retro_system_av_info* info)
 	info->geometry.base_width  = 640;
 	info->geometry.base_height = (retro_get_region() == RETRO_REGION_NTSC) ? 448 : 512;
 
-	if (               (  !is_software_setting(setting_renderer)
-			   && setting_renderer != "paraLLEl-GS")
-			|| (  setting_renderer == "paraLLEl-GS" 
-			   && setting_pgs_high_res_scanout))
+	/* The software renderer draws at 2x for any upscale of two or more. */
+	if (is_software_setting(setting_renderer) && upscale_mul > 2)
+		upscale_mul = 2;
+
+	if (setting_renderer != "paraLLEl-GS" || setting_pgs_high_res_scanout)
 	{
 		info->geometry.base_width  *= upscale_mul;
 		info->geometry.base_height *= upscale_mul;
@@ -2057,11 +1907,10 @@ void retro_reset(void)
 {
 	cpu_thread_pause();
 	VMManager::Reset();
-	/* Discard any audio buffered before the reset; carrying pre-reset
-	 * samples into the post-reset stream causes audible glitches and
-	 * leaves the buffer in a non-deterministic starting state. */
-	discard_buffered_audio();
-	cpu_thread_resume();
+	/* The frame and the audio the EE had ready are the old machine's.
+	 * The next retro_run starts the new one. */
+	mtgs_pending.pending = 0;
+	audio_queue_discard();
 }
 
 /* See GSDevice12.cpp and GSDevice11.cpp. */
@@ -2076,7 +1925,7 @@ extern "C" void gs_d3d11_negotiate_hw_interface(retro_environment_t cb);
  * one that is. */
 static bool freeze(void)
 {
-	if (GSfreeze(FreezeAction::Size, &fd) != 0)
+	if (GSfreeze(FREEZE_SIZE, &fd) != 0)
 	{
 		log_cb(RETRO_LOG_ERROR, "(context_destroy) Failed to get GS freeze size\n");
 		return false;
@@ -2085,7 +1934,7 @@ static bool freeze(void)
 	fd_data = std::make_unique<u8[]>(fd.size);
 	fd.data = fd_data.get();
 
-	if (GSfreeze(FreezeAction::Save, &fd) != 0)
+	if (GSfreeze(FREEZE_SAVE, &fd) != 0)
 	{
 		log_cb(RETRO_LOG_ERROR, "(context_destroy) Failed to freeze GS\n");
 		return false;
@@ -2096,17 +1945,28 @@ static bool freeze(void)
 
 static void defrost(void)
 {
-	if (GSfreeze(FreezeAction::Load, &fd) != 0)
+	if (GSfreeze(FREEZE_LOAD, &fd) != 0)
 		log_cb(RETRO_LOG_ERROR, "(context_reset) Failed to defrost\n");
 }
 
+/* The frontend gave a Vulkan context and no interface to present through:
+ * there is no renderer to open until the next context_reset. */
+static bool hw_interface_missing;
+
 static void libretro_context_reset(void)
 {
+	hw_interface_missing = false;
 #ifdef ENABLE_VULKAN
 	if (hw_render.context_type == RETRO_HW_CONTEXT_VULKAN)
 	{
 		if (!environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, (void **)&vulkan) || !vulkan)
+		{
+			/* Nothing to present through, so nothing is opened on it. */
+			vulkan = NULL;
+			hw_interface_missing = true;
 			log_cb(RETRO_LOG_ERROR, "Failed to get HW rendering interface!\n");
+			return;
+		}
 		if (vulkan->interface_version != RETRO_HW_RENDER_INTERFACE_VULKAN_VERSION)
 			log_cb(RETRO_LOG_ERROR, "HW render interface mismatch, expected %u, got %u!\n",
 			RETRO_HW_RENDER_INTERFACE_VULKAN_VERSION, vulkan->interface_version);
@@ -2126,12 +1986,15 @@ static void libretro_context_reset(void)
 		defrost();
 		GS_HW_CONTEXT_END();
 	}
-
-	cpu_thread_resume();
+	/* The EE stays paused: the next retro_run presents the frame the
+	 * teardown's drain kept and lets it go. */
 }
 
 static void libretro_context_destroy(void)
 {
+	/* Pausing drains the GS ring, and the frame the EE had ready is kept
+	 * for the next retro_run (MTGSOwner.h): nothing is presented from
+	 * inside the frontend's own context teardown. */
 	cpu_thread_pause();
 
 #ifdef ENABLE_VULKAN
@@ -2202,10 +2065,9 @@ static bool libretro_set_hw_render(retro_hw_context_type type)
 			hw_render.version_minor = 0;
 			break;
 
-		case RETRO_HW_CONTEXT_OPENGLES3:
-			hw_render.version_major = 3;
-			hw_render.version_minor = 0;
-			break;
+		/* No OpenGL ES: the GL renderer is desktop GL only (GLSL 330/430
+		 * core shaders, GL_ARB_shading_language_420pack), so an ES context
+		 * would be accepted and then produce no picture. */
 
 		case RETRO_HW_CONTEXT_NONE:
 			return true;
@@ -2258,8 +2120,6 @@ static bool libretro_select_hw_render(void)
 			return true;
 		else if (libretro_set_hw_render(RETRO_HW_CONTEXT_OPENGL))
 			return true;
-		else if (libretro_set_hw_render(RETRO_HW_CONTEXT_OPENGLES3))
-			return true;
 	}
 
 #ifdef _WIN32
@@ -2272,9 +2132,14 @@ static bool libretro_select_hw_render(void)
 		return true;
 	if (libretro_set_hw_render(RETRO_HW_CONTEXT_OPENGL))
 		return true;
-	if (libretro_set_hw_render(RETRO_HW_CONTEXT_OPENGLES3))
+#ifdef ENABLE_VULKAN
+	if (libretro_set_hw_render(RETRO_HW_CONTEXT_VULKAN))
 		return true;
-	return false;
+#endif
+	/* No context a hardware renderer can draw into, e.g. an OpenGL ES-only
+	 * frontend: the software renderer needs none. */
+	log_cb(RETRO_LOG_WARN, "No usable hardware context; using the software renderer.\n");
+	return libretro_set_hw_render(RETRO_HW_CONTEXT_NONE);
 }
 
 /* RAII registration with the lock-free fault filter: this thread
@@ -2328,6 +2193,8 @@ static void cpu_thread_entry(VMBootParameters boot_params)
 						continue;
 
 					case VMState::Running:
+						retro_atomic_store_release_int(&cpu_thread_resumes_taken,
+							retro_atomic_load_acquire_int(&cpu_thread_resumes));
 						VMManager::Execute();
 						continue;
 
@@ -2359,7 +2226,6 @@ static void cpu_thread_entry(VMBootParameters boot_params)
 						 * notifies; registering before the re-check is what
 						 * keeps that from being lost.  A full sleep lets a
 						 * paused core idle instead of waking to re-poll. */
-						cpu_thread_resume_ec_ensure();
 						while (VMManager::GetState() == VMState::Paused)
 						{
 							int key = retro_eventcount_prepare_wait(&cpu_thread_resume_ec);
@@ -2386,7 +2252,22 @@ bool create_device_vulkan(retro_vulkan_context *context, VkInstance instance, Vk
 	VkSurfaceKHR surface, PFN_vkGetInstanceProcAddr get_instance_proc_addr, const char **required_device_extensions,
 	unsigned num_required_device_extensions, const char **required_device_layers, unsigned num_required_device_layers,
 	const VkPhysicalDeviceFeatures *required_features);
+bool create_device2_vulkan(retro_vulkan_context *context, VkInstance instance, VkPhysicalDevice gpu,
+	VkSurfaceKHR surface, PFN_vkGetInstanceProcAddr get_instance_proc_addr,
+	retro_vulkan_create_device_wrapper_t create_device_wrapper, void *opaque);
 const VkApplicationInfo *get_application_info_vulkan(void);
+
+/* A frontend without the support query takes version 1 only; RetroArch
+ * 1.14 and older reject any other version outright. */
+static unsigned libretro_vulkan_negotiation_version(void)
+{
+	struct retro_hw_render_context_negotiation_interface probe;
+	probe.interface_type    = RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN;
+	probe.interface_version = 0;
+	if (!environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_SUPPORT, &probe))
+		return 1;
+	return RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN_VERSION;
+}
 #endif
 
 void retro_init(void)
@@ -2440,7 +2321,7 @@ void retro_init(void)
 				if (fd.Size < MIN_BIOS_SIZE || fd.Size > MAX_BIOS_SIZE)
 					continue;
 
-				if (IsBIOS(fd.FileName.c_str(), version, description, sizeof(description), region, zone, sizeof(zone)))
+				if (IsBIOS(fd.FileName.c_str(), &version, description, sizeof(description), &region, zone, sizeof(zone)))
 					bios_info.push_back({ std::string(path_basename(fd.FileName.c_str())), std::string(description) });
 			}
 
@@ -2480,11 +2361,7 @@ void retro_init(void)
 
 	environ_cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE, &disk_control);
 
-	/* PAL: ~960 stereo samples/frame -> 1920 int16. NTSC: ~801 stereo
-	 * samples/frame -> 1602 int16. 4096 int16 (2048 stereo) gives us
-	 * headroom past the steady-state nominal so we don't realloc on
-	 * the first frame. */
-	init_output_audio_buffer(4096);
+	audio_queue_init();
 }
 
 static void get_first_track_from_cue(std::string &path)
@@ -2493,17 +2370,12 @@ static void get_first_track_from_cue(std::string &path)
 	// so just find the first 'FILE "<gametrack>.bin" BINARY' line
 	// and extract the track filename from it
 	char buffer[1024];
-	char basedir[4096];
 	const char *line_start = "FILE \"";
 	const char *line_end = "\" BINARY";
 
-	snprintf(basedir, sizeof(basedir), "%s", path.c_str());
-	path_basedir(basedir);
-
-	/* Through the VFS, like every other file this core opens.  fopen()
-	 * takes the path in the local 8-bit encoding, so on Windows a cue
-	 * sitting under a path with any non-ASCII character in it simply
-	 * did not open. */
+	/* Through the VFS, like every other file this core opens: fopen()
+	 * takes the path in the local 8-bit encoding, which on Windows
+	 * cannot name every path. */
 	RFILE *cue_file = filestream_open(path.c_str(),
 			RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
 	if (!cue_file)
@@ -2524,13 +2396,22 @@ static void get_first_track_from_cue(std::string &path)
 			{
 				const std::string track(line.substr(start, end - start));
 				filestream_close(cue_file);
-				/* An absolute FILE entry is already the path; joining it
-				 * to the cue's own directory produced nonsense like
-				 * /games//games/disc.bin and the track was not found. */
+				/* An absolute FILE entry is already the path; a relative
+				 * one is under the cue's own directory. */
 				if (path_is_absolute(track.c_str()))
 					path = track;
 				else
-					path = basedir + track;
+				{
+					/* path_basedir writes "./" for a bare name. */
+					char *basedir = (char*)malloc(path.size() + 3);
+					if (basedir)
+					{
+						memcpy(basedir, path.c_str(), path.size() + 1);
+						path_basedir(basedir);
+						path = basedir + track;
+						free(basedir);
+					}
+				}
 				return;
 			}
 		}
@@ -2547,7 +2428,7 @@ static void get_first_track_from_cue(std::string &path)
  * return past CPUThreadInitialize() used to leave the whole VM-thread
  * allocation behind: SysMainMemory's EE/IOP/VU RAM and vtlb
  * reservations, the recompiler caches from InitializeCPUProviders, plus
- * GSinit/SPU2::Initialize/USBinit.  The core stayed resident holding
+ * GSinit/SPU2_Initialize/USBinit.  The core stayed resident holding
  * all of it, which is what a failed load looked like from the outside -
  * RetroArch still running, memory never coming back.
  *
@@ -2607,7 +2488,12 @@ bool retro_load_game(const struct retro_game_info* game)
 	strlcpy(EmuFolders::Settings, EmuFolders::AppRoot,
 			sizeof(EmuFolders::Settings));
 
-	s_option_config = Pcsx2Config();
+	{
+		/* The defaults, kept rather than built on the stack each time:
+		 * a Pcsx2Config is 25 KB. */
+		static const Pcsx2Config defaults;
+		s_option_config = defaults;
+	}
 	VMManager::ApplyHardwareDefaults(s_option_config);
 	/* The two values that ride beside the config start over with it.
 	 * The settings map did this at every load: SetDefaults put the
@@ -2696,13 +2582,16 @@ bool retro_load_game(const struct retro_game_info* game)
 				if (!is_software_setting(setting_renderer))
 					s_option_config.GS.Renderer = static_cast<decltype(s_option_config.GS.Renderer)>((int)GSRendererType::VK);
 				{
-					static const struct retro_hw_render_context_negotiation_interface_vulkan iface = {
+					static struct retro_hw_render_context_negotiation_interface_vulkan iface = {
 						RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN,
 						RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN_VERSION,
 						get_application_info_vulkan,
 						create_device_vulkan,
 						nullptr,
+						nullptr,
+						create_device2_vulkan,
 					};
+					iface.interface_version = libretro_vulkan_negotiation_version();
 					environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE, (void*)&iface);
 				}
 				Vulkan::LoadVulkanLibrary();
@@ -2721,21 +2610,23 @@ bool retro_load_game(const struct retro_game_info* game)
 			break;
 	}
 
-	libretro_content[0] = '\0';
+	/* Per-game cards are named after the content; empty, the shared
+	 * cards are used. */
+	libretro_content.clear();
 
 	if (!setting_shared_memory_cards && game && game->path)
 	{
 		const char* save_base = nullptr;
-		char memcard_path[PCSX2_PATH_MAX];
 
 		environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_base);
 
 		strlcpy(s_option_memcards, save_base, sizeof(s_option_memcards));
 		VMManager::Internal::UpdateEmuFolders();
 
-		snprintf(memcard_path, sizeof(memcard_path), "%s", path_basename(game->path));
-		path_remove_extension(memcard_path);
-		libretro_content = memcard_path;
+		/* The content's name without its extension. */
+		const char* name = path_basename(game->path);
+		const char* ext  = strrchr(name, '.');
+		libretro_content.assign(name, ext ? (size_t)(ext - name) : strlen(name));
 	}
 
 	VMManager::ApplySettings();
@@ -2754,18 +2645,22 @@ bool retro_load_game(const struct retro_game_info* game)
 		if (!strcmp(path_get_extension(game->path), "m3u"))
 		{
 			RFILE *fd = filestream_open(game->path, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+			/* The line, the playlist's directory and the joined path. */
+			char *paths = fd ? (char*)malloc(3 * PCSX2_PATH_MAX) : NULL;
 
-			if (fd)
+			if (fd && !paths)
+				filestream_close(fd);
+			else if (fd)
 			{
 				int len;
-				char linebuf[PCSX2_PATH_MAX];
-				char game_dir[PCSX2_PATH_MAX];
-				char game_abs[PCSX2_PATH_MAX];
+				char *linebuf  = paths;
+				char *game_dir = paths + PCSX2_PATH_MAX;
+				char *game_abs = paths + 2 * PCSX2_PATH_MAX;
 
 				game_dir[0] = '\0';
 				game_abs[0] = '\0';
 
-				snprintf(game_dir, sizeof(game_dir), "%s", game_path.c_str());
+				snprintf(game_dir, PCSX2_PATH_MAX, "%s", game_path.c_str());
 				path_basedir(game_dir);
 
 				while ((filestream_gets(fd, linebuf, PCSX2_PATH_MAX) != NULL) && (disk_images.size() < MAX_DISKS))
@@ -2808,9 +2703,9 @@ bool retro_load_game(const struct retro_game_info* game)
 					 * playlist will live has to emit - silently listed
 					 * no discs at all. */
 					if (path_is_absolute(linebuf))
-						strlcpy(game_abs, linebuf, sizeof(game_abs));
+						strlcpy(game_abs, linebuf, PCSX2_PATH_MAX);
 					else
-						fill_pathname_join(game_abs, game_dir, linebuf, sizeof(game_abs));
+						fill_pathname_join(game_abs, game_dir, linebuf, PCSX2_PATH_MAX);
 
 					if (path_is_valid(game_abs))
 					{
@@ -2823,13 +2718,14 @@ bool retro_load_game(const struct retro_game_info* game)
 				}
 
 				apply_initial_image();
-				get_image_path(get_image_index(), game_abs, sizeof(game_abs));
+				get_image_path(get_image_index(), game_abs, PCSX2_PATH_MAX);
 				boot_params.filename = game_abs;
 
 				/* The playlist has been read; the handle was never
 				 * released, so every multi-disc load leaked an RFILE and
 				 * the 64 KiB buffer the VFS attaches to it. */
 				filestream_close(fd);
+				free(paths);
 			}
 		}
 		else
@@ -2850,6 +2746,11 @@ bool retro_load_game(const struct retro_game_info* game)
 	{
 		retro_eventcount_init(&cpu_thread_boot_ec);
 		cpu_thread_boot_ec_inited = true;
+	}
+	if (!cpu_thread_resume_ec_inited)
+	{
+		retro_eventcount_init(&cpu_thread_resume_ec);
+		cpu_thread_resume_ec_inited = true;
 	}
 	cpu_thread_boot_params = boot_params;
 	/* On the bus before the machine runs, so the i.LINK ID the game reads at
@@ -2907,6 +2808,13 @@ unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 bool retro_load_game_special(unsigned game_type,
 	const struct retro_game_info* info, size_t num_info) { return false; }
 
+/* The machine as it was before a load, put back if the load fails. Kept
+ * from load to load and freed with the game: rollback loads a state every
+ * frame, and fresh pages for tens of MB each time cost more than the copy
+ * into them. */
+static u8*    s_unserialize_backup;
+static size_t s_unserialize_backup_size;
+
 void retro_unload_game(void)
 {
 	/* Off the bus before anything waits on the EE: a console parked on the
@@ -2914,9 +2822,15 @@ void retro_unload_game(void)
 	 * as long as the peer stays away. */
 	FWlinkDetach();
 
+	free(s_unserialize_backup);
+	s_unserialize_backup      = NULL;
+	s_unserialize_backup_size = 0;
+
 	if (MTGS::IsOpen())
 	{
+		/* The frame the EE had ready is dropped with the game. */
 		cpu_thread_pause();
+		mtgs_pending.pending = 0;
 		MTGS::CloseGS();
 	}
 
@@ -2932,8 +2846,8 @@ void retro_unload_game(void)
 	 * the new state and not sleep) or is already in Wait() (the banked
 	 * post wakes it), the wakeup cannot be lost.  The old mutex+condvar
 	 * version needed a lock across the notify for the same guarantee. */
-	cpu_thread_resume_ec_ensure();
-	retro_eventcount_notify(&cpu_thread_resume_ec);
+	if (cpu_thread_resume_ec_inited)
+		retro_eventcount_notify(&cpu_thread_resume_ec);
 	/* Input goes down before the join, as it always has: the ordering
 	 * here is not this commit's to change.  The teardown helper is
 	 * flagged, so it will not touch input a second time. */
@@ -2965,9 +2879,9 @@ void retro_unload_game(void)
  *    difference must not rebuild anything. Geometry does not need an announce
  *    at all on the HW-render path - SET_GEOMETRY carries it without a reinit,
  *    which is how the widescreen hint already does it.
- *  - Drain the GS thread before an announce that does go out, so no queued work
- *    races the frontend's reinit. The CPU thread is already parked here:
- *    retro_run has not resumed it yet. */
+ *  - Pause the EE before an announce that does go out, which drains the GS
+ *    ring, so no queued work races the frontend's reinit. The frame the EE
+ *    had ready is kept for this retro_run to present (MTGSOwner.h). */
 static void update_av_info(void)
 {
 	retro_system_av_info av_info;
@@ -3005,7 +2919,7 @@ static void update_av_info(void)
 	}
 
 	if (hw_vulkan && MTGS::IsOpen())
-		MTGS::WaitGS(false);
+		cpu_thread_pause();
 
 	environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av_info);
 }
@@ -3026,23 +2940,47 @@ void retro_run(void)
 
 	Input::Update();
 
+	if (hw_interface_missing)
+	{
+		/* No renderer, and the EE stays parked: the frame is the last. */
+		video_cb(NULL, 0, 0, 0);
+		return;
+	}
+
 	if (!MTGS::IsOpen())
 		MTGS::TryOpenGS();
 
+	/* One frame, and that frame's audio. When something since the last
+	 * retro_run drained the ring, the frame the EE had ready is pending
+	 * and is this one (MTGSOwner.h), and the EE stays where it stopped.
+	 * Otherwise the EE runs a frame on the input polled above - resumed
+	 * if it is paused, let through the frame gate if it waits there -
+	 * and this waits for the vsync that ends it. */
+	if (mtgs_present_pending())
+	{
+		audio_queue_upload(mtgs_pending.audio_mark, batch_cb);
+		return;
+	}
+
 	if ((VMState)retro_atomic_load_acquire_int(&cpu_thread_state) == VMState::Paused)
+	{
+		pad_input_latch();
 		cpu_thread_resume();
+	}
+	else
+		mtgs_frame_gate_open();
 
 	if (!MTGS::MainLoop(false))
 	{
 		/* Bounded-wait timeout: the EE thread delivered no vsync within
 		 * the window.  Dupe the previous frame so the frontend's frame
 		 * time iteration, input, and menu stay alive regardless of what
-		 * the emulation threads are doing. */
+		 * the emulation threads are doing; the frame and its audio come
+		 * with a later retro_run. */
 		video_cb(NULL, 0, 0, 0);
+		return;
 	}
-	upload_output_audio_buffer();
-
-
+	audio_queue_upload(mtgs_presented_mark, batch_cb);
 }
 
 std::optional<WindowInfo> Host::AcquireRenderWindow(void)
@@ -3071,210 +3009,259 @@ size_t retro_serialize_size(void)
 	size         += VU1_MEMSIZE;
 	size         += VU0_PROGSIZE;
 	size         += VU1_PROGSIZE;
-	SPU2freeze(FreezeAction::Size, &fP);
+	SPU2freeze(FREEZE_SIZE, &fP);
 	size         += fP.size;
-	PADfreeze(FreezeAction::Size, &fP);
+	PADfreeze(FREEZE_SIZE, &fP);
 	size         += fP.size;
-	GSfreeze(FreezeAction::Size, &fP);
+	GSfreeze(FREEZE_SIZE, &fP);
 	size         += fP.size;
+	size         += state_ext_size();
 
 	return size;
 }
 
-bool retro_serialize(void* data, size_t size)
+/* Writes the whole machine into dst, size bytes, the size
+ * retro_serialize_size() gives: the emulator's blocks from the start,
+ * the extension block (state_ext.h) in the last bytes, and zeros between.
+ * The CPU thread must be paused and the VU1 and GS threads quiesced. */
+static bool state_write(void* dst, size_t size)
 {
 	freezeData fP;
-	std::vector<u8> buffer;
+	SaveStateBase state;
+	SaveStateBase* saveme = &state;
+	const size_t ext = state_ext_size();
 
-	cpu_thread_pause();
-
-	/* Quiesce the MTVU worker and GS thread before snapshotting, so the VU
-	 * and GS state we capture is consistent and not mid-update by another
-	 * thread (matches the load path and the normal save/load invariant).
-	 * WaitVU() is a no-op when the multithreaded VU1 is not active, so it is
-	 * safe to call unconditionally. */
-	vu1Thread.WaitVU();
-	MTGS::WaitGS(false);
-
-	/* retro_serialize_size() already computed the exact upper bound on
-	 * what we need. Reserve once so SaveStateBase's incremental
-	 * resize() calls inside FreezeMem/PrepBlock don't realloc and copy
-	 * the partial buffer multiple times as different sections (BIOS,
-	 * internals, EE/IOP/VU memory, SPU2/PAD/GS freeze blocks) accumulate. */
-	buffer.reserve(size);
-
-	SaveStateBase saveme(buffer, true);
-
-	saveme.FreezeBios();
-	saveme.FreezeInternals();
-
-	saveme.FreezeMem(eeMem->Main, sizeof(eeMem->Main));
-	saveme.FreezeMem(iopMem->Main, sizeof(iopMem->Main));
-	saveme.FreezeMem(eeHw, sizeof(eeHw));
-	saveme.FreezeMem(iopHw, sizeof(iopHw));
-	saveme.FreezeMem(eeMem->Scratch, sizeof(eeMem->Scratch));
-	saveme.FreezeMem(vuRegs[0].Mem, VU0_MEMSIZE);
-	saveme.FreezeMem(vuRegs[1].Mem, VU1_MEMSIZE);
-	saveme.FreezeMem(vuRegs[0].Micro, VU0_PROGSIZE);
-	saveme.FreezeMem(vuRegs[1].Micro, VU1_PROGSIZE);
-
-	fP.size = 0;
-	fP.data = nullptr;
-	SPU2freeze(FreezeAction::Size, &fP);
-	saveme.PrepBlock(fP.size);
-	fP.data = saveme.GetBlockPtr();
-	SPU2freeze(FreezeAction::Save, &fP);
-	saveme.CommitBlock(fP.size);
-
-	fP.size = 0;
-	fP.data = nullptr;
-	PADfreeze(FreezeAction::Size, &fP);
-	saveme.PrepBlock(fP.size);
-	fP.data = saveme.GetBlockPtr();
-	PADfreeze(FreezeAction::Save, &fP);
-	saveme.CommitBlock(fP.size);
-
-	fP.size = 0;
-	fP.data = nullptr;
-	GSfreeze(FreezeAction::Size, &fP);
-	saveme.PrepBlock(fP.size);
-	fP.data = saveme.GetBlockPtr();
-	GSfreeze(FreezeAction::Save, &fP);
-	saveme.CommitBlock(fP.size);
-
-	/* Bound the copy by the frontend-provided buffer size: if the
-	 * actual saved size somehow exceeds what retro_serialize_size()
-	 * predicted, refuse rather than overrun the caller's buffer. */
-	if (buffer.size() > size)
-	{
-		log_cb(RETRO_LOG_ERROR, "retro_serialize: produced %zu bytes, "
-			"frontend buffer is only %zu\n", buffer.size(), size);
-		cpu_thread_resume();
+	if (size < ext)
 		return false;
-	}
-	memcpy(data, buffer.data(), buffer.size());
+	SaveState_Init(saveme, (u8 *)dst, 0, size - ext, true);
+	saveme->fixed = true;
 
-	cpu_thread_resume();
+	SaveState_FreezeBios(saveme);
+	SaveState_FreezeInternals(saveme);
+
+	SaveState_FreezeMem(saveme, eeMem->Main, sizeof(eeMem->Main));
+	SaveState_FreezeMem(saveme, iopMem->Main, sizeof(iopMem->Main));
+	SaveState_FreezeMem(saveme, eeHw, sizeof(eeHw));
+	SaveState_FreezeMem(saveme, iopHw, sizeof(iopHw));
+	SaveState_FreezeMem(saveme, eeMem->Scratch, sizeof(eeMem->Scratch));
+	SaveState_FreezeMem(saveme, vuRegs[0].Mem, VU0_MEMSIZE);
+	SaveState_FreezeMem(saveme, vuRegs[1].Mem, VU1_MEMSIZE);
+	SaveState_FreezeMem(saveme, vuRegs[0].Micro, VU0_PROGSIZE);
+	SaveState_FreezeMem(saveme, vuRegs[1].Micro, VU1_PROGSIZE);
+
+	fP.size = 0;
+	fP.data = nullptr;
+	SPU2freeze(FREEZE_SIZE, &fP);
+	SaveState_PrepBlock(saveme, fP.size);
+	fP.data = SaveState_BlockPtr(saveme);
+	SPU2freeze(FREEZE_SAVE, &fP);
+	SaveState_CommitBlock(saveme, fP.size);
+
+	fP.size = 0;
+	fP.data = nullptr;
+	PADfreeze(FREEZE_SIZE, &fP);
+	SaveState_PrepBlock(saveme, fP.size);
+	fP.data = SaveState_BlockPtr(saveme);
+	PADfreeze(FREEZE_SAVE, &fP);
+	SaveState_CommitBlock(saveme, fP.size);
+
+	fP.size = 0;
+	fP.data = nullptr;
+	GSfreeze(FREEZE_SIZE, &fP);
+	SaveState_PrepBlock(saveme, fP.size);
+	fP.data = SaveState_BlockPtr(saveme);
+	GSfreeze(FREEZE_SAVE, &fP);
+	SaveState_CommitBlock(saveme, fP.size);
+
+	if (!SaveState_IsOkay(saveme))
+		return false;
+	memset((u8 *)dst + saveme->idx, 0, size - ext - (size_t)saveme->idx);
+	state_ext_write((u8 *)dst + size - ext);
 	return true;
 }
 
-bool retro_unserialize(const void* data, size_t size)
+/* Loads the whole machine from a state, stopping at the first block that
+ * does not load. Whatever came before that block has already been applied,
+ * so a false return leaves the machine half-loaded: the caller restores it.
+ * The CPU thread must be paused and the VU1 and GS threads quiesced. */
+static bool state_read(const void* data, size_t size)
 {
 	freezeData fP;
-	std::vector<u8> buffer;
+	SaveStateBase loadme;
+	/* The emulator's blocks end where the extension block starts. */
+	const size_t full_size = size;
+	size = state_ext_strip(data, size);
 
-	cpu_thread_pause();
+	/* The live size is what PrepBlock and FreezeMem bound against, so the
+	 * whole payload counts as present from the start: otherwise the first
+	 * PrepBlock for SPU2, PAD or GS sets the error flag and every block
+	 * after it loads as zeros.
+	 *
+	 * The frontend's buffer serves directly rather than being copied into
+	 * one of ours: a loading SaveStateBase only ever reads from it, and so
+	 * does every FREEZE_LOAD handler downstream -- SPU2Savestate_ThawIt
+	 * copies to an aligned temp when it needs one rather than working in
+	 * place, and the PAD and GS defrosts read through const pointers. The
+	 * const_cast is discharged by that, and it saves copying the whole
+	 * state on every load. */
+	SaveState_Init(&loadme, (u8 *)const_cast<void *>(data), size, size, false);
 
-	/* cpu_thread_pause() only stops the EE/main thread. Before we overwrite
-	 * VU and GS state below we must also quiesce the MTVU worker and the GS
-	 * thread, exactly as the normal reset/load path does - otherwise, when
-	 * loading a state while the VM is already running (e.g. RetroArch "Load
-	 * State" mid-game) the still-live VU1 thread keeps operating on the VU
-	 * memory / micro programs / JIT state we are in the middle of replacing,
-	 * corrupting the VM so it can't continue and every later load fails until
-	 * the content is closed and relaunched. A freshly booted VM has these
-	 * threads idle, which is why a cold load worked while an in-session load
-	 * did not. WaitVU() is a no-op when the multithreaded VU1 is not active,
-	 * so it is safe to call unconditionally. */
-	vu1Thread.WaitVU();
-	MTGS::WaitGS(false);
-
-	/* resize() (not reserve()): m_memory.size() is what PrepBlock and
-	 * SaveStateBase::FreezeMem uses for bounds-checking. With reserve()
-	 * size() stays 0, the very first PrepBlock for SPU2/PAD/GS sets
-	 * m_error=true, and every subsequent freeze block silently loads as
-	 * zeros - SPU2/PAD/GS state was effectively never restored. */
-	buffer.resize(size);
-	memcpy(buffer.data(), data, size);
-	SaveStateBase loadme(buffer, false);
-
-	loadme.FreezeBios();
-	loadme.FreezeInternals();
+	if (!SaveState_FreezeBios(&loadme) || !SaveState_FreezeInternals(&loadme))
+	{
+		log_cb(RETRO_LOG_ERROR, "state load: CPU or subsystem block rejected "
+			"at offset %d (tag '%.31s')\n", loadme.idx, loadme.tagspace);
+		return false;
+	}
 
 	VMManager::Internal::ClearCPUExecutionCaches();
-	loadme.FreezeMem(eeMem->Main, sizeof(eeMem->Main));
-	loadme.FreezeMem(iopMem->Main, sizeof(iopMem->Main));
-	loadme.FreezeMem(eeHw, sizeof(eeHw));
-	loadme.FreezeMem(iopHw, sizeof(iopHw));
-	loadme.FreezeMem(eeMem->Scratch, sizeof(eeMem->Scratch));
-	loadme.FreezeMem(vuRegs[0].Mem, VU0_MEMSIZE);
-	loadme.FreezeMem(vuRegs[1].Mem, VU1_MEMSIZE);
-	loadme.FreezeMem(vuRegs[0].Micro, VU0_PROGSIZE);
-	loadme.FreezeMem(vuRegs[1].Micro, VU1_PROGSIZE);
+	SaveState_FreezeMem(&loadme, eeMem->Main, sizeof(eeMem->Main));
+	SaveState_FreezeMem(&loadme, iopMem->Main, sizeof(iopMem->Main));
+	SaveState_FreezeMem(&loadme, eeHw, sizeof(eeHw));
+	SaveState_FreezeMem(&loadme, iopHw, sizeof(iopHw));
+	SaveState_FreezeMem(&loadme, eeMem->Scratch, sizeof(eeMem->Scratch));
+	SaveState_FreezeMem(&loadme, vuRegs[0].Mem, VU0_MEMSIZE);
+	SaveState_FreezeMem(&loadme, vuRegs[1].Mem, VU1_MEMSIZE);
+	SaveState_FreezeMem(&loadme, vuRegs[0].Micro, VU0_PROGSIZE);
+	SaveState_FreezeMem(&loadme, vuRegs[1].Micro, VU1_PROGSIZE);
+	if (!SaveState_IsOkay(&loadme))
+	{
+		log_cb(RETRO_LOG_ERROR, "state load: memory blocks short (size=%zu)\n", size);
+		return false;
+	}
 
 	fP.size = 0;
 	fP.data = nullptr;
-	SPU2freeze(FreezeAction::Size, &fP);
-	loadme.PrepBlock(fP.size);
-	fP.data = loadme.GetBlockPtr();
-	SPU2freeze(FreezeAction::Load, &fP);
-	loadme.CommitBlock(fP.size);
+	SPU2freeze(FREEZE_SIZE, &fP);
+	SaveState_PrepBlock(&loadme, fP.size);
+	fP.data = SaveState_BlockPtr(&loadme);
+	if (!SaveState_IsOkay(&loadme) || SPU2freeze(FREEZE_LOAD, &fP) != 0)
+	{
+		log_cb(RETRO_LOG_ERROR, "state load: SPU2 block rejected\n");
+		return false;
+	}
+	SaveState_CommitBlock(&loadme, fP.size);
 
 	fP.size = 0;
 	fP.data = nullptr;
-	PADfreeze(FreezeAction::Size, &fP);
-	loadme.PrepBlock(fP.size);
-	fP.data = loadme.GetBlockPtr();
-	PADfreeze(FreezeAction::Load, &fP);
-	loadme.CommitBlock(fP.size);
+	PADfreeze(FREEZE_SIZE, &fP);
+	SaveState_PrepBlock(&loadme, fP.size);
+	fP.data = SaveState_BlockPtr(&loadme);
+	if (!SaveState_IsOkay(&loadme) || PADfreeze(FREEZE_LOAD, &fP) != 0)
+	{
+		log_cb(RETRO_LOG_ERROR, "state load: PAD block rejected\n");
+		return false;
+	}
+	SaveState_CommitBlock(&loadme, fP.size);
 
 	/* GS is the final block: hand Defrost the actual remaining payload
 	 * rather than this session's freeze-size expectation. The saved GS
 	 * block's length depends on the version and configuration of the
 	 * session that wrote it; Defrost walks the payload by the version
-	 * header inside it, and its own size guard must judge the real bytes
-	 * present, not our recomputation. A mismatch here used to slice the
-	 * wrong span silently. Also check the result: a rejected defrost
-	 * (newer state version, truncated payload) previously "succeeded"
-	 * into a reset, empty GS. */
-	fP.size = static_cast<int>(size) - loadme.GetCurrentPos();
+	 * header inside it, and its own size guard judges the real bytes
+	 * present. */
+	fP.size = static_cast<int>(size) - loadme.idx;
 	if (fP.size <= 0)
 	{
-		cpu_thread_resume();
-		log_cb(RETRO_LOG_ERROR, "retro_unserialize: no GS payload left "
-			"(offset=%d size=%zu)\n", loadme.GetCurrentPos(), size);
+		log_cb(RETRO_LOG_ERROR, "state load: no GS payload left "
+			"(offset=%d size=%zu)\n", loadme.idx, size);
 		return false;
 	}
-	fP.data = loadme.GetBlockPtr();
-	if (GSfreeze(FreezeAction::Load, &fP) != 0)
+	fP.data = SaveState_BlockPtr(&loadme);
+	if (GSfreeze(FREEZE_LOAD, &fP) != 0)
 	{
-		cpu_thread_resume();
-		log_cb(RETRO_LOG_ERROR, "retro_unserialize: GS state rejected "
+		log_cb(RETRO_LOG_ERROR, "state load: GS block rejected "
 			"(payload=%d bytes)\n", fP.size);
 		return false;
 	}
-	loadme.CommitBlock(fP.size);
-
-	/* Discard buffered audio: any pre-load samples in the buffer no
-	 * longer match the SPU2 state we just restored. */
-	discard_buffered_audio();
-
-	/* If the state was loaded before the game booted far enough for the normal
-	 * boot path to apply GameDB settings (e.g. RetroArch Auto Load State), the
-	 * game identity VMManager caches is still the BIOS one: the per-game
-	 * fixes were never applied and the game can render incorrectly (issue
-	 * #127). The state has just restored ElfCRC and the game-started flags,
-	 * so re-derive the identity from them; the call early-returns when the
-	 * identity is unchanged, keeping repeat unserializes cheap.
-	 *
-	 * This must happen while the CPU thread is still paused: the identity
-	 * change runs ApplySettings, whose config diff can reset the EE
-	 * recompiler and execution caches, which is only safe with the EE
-	 * thread quiescent. Doing it after cpu_thread_resume() raced the
-	 * running JIT and caused intermittent SIGILL/aborts and timing slips
-	 * after state loads. */
-	VMManager::RefreshRunningGameAfterStateLoad();
-
-	cpu_thread_resume();
-	if (!loadme.IsOkay())
-	{
-		log_cb(RETRO_LOG_ERROR, "retro_unserialize: short or "
-			"corrupt savestate (size=%zu)\n", size);
+	SaveState_CommitBlock(&loadme, fP.size);
+	if (!SaveState_IsOkay(&loadme))
 		return false;
+
+	state_ext_read(data, full_size);
+	return true;
+}
+
+/* Quiesce everything a state touches: the EE/main thread, and the MTVU
+ * worker and GS thread, which otherwise keep operating on the VU memory,
+ * micro programs and GS state being captured or replaced. WaitVU() is a
+ * no-op when the multithreaded VU1 is not active. */
+static void state_quiesce(void)
+{
+	cpu_thread_pause();
+	vu1Thread.WaitVU();
+	MTGS::WaitGS(false);
+}
+
+bool retro_serialize(void* data, size_t size)
+{
+	bool ok;
+
+	state_quiesce();
+	/* Straight into the frontend's buffer, which is bounded by size: a
+	 * state that would not fit is refused rather than grown into. */
+	ok = state_write(data, size);
+	if (!ok)
+		log_cb(RETRO_LOG_ERROR, "retro_serialize: the state does not fit "
+			"the %zu bytes given\n", size);
+
+	/* The EE stays paused: the next retro_run presents the frame the
+	 * pause left pending and lets it go, so taking a state does not
+	 * move the machine on. */
+	return ok;
+}
+
+bool retro_unserialize(const void* data, size_t size)
+{
+	const size_t backup_size = retro_serialize_size();
+	u8* backup;
+	bool have_backup, ok;
+
+	if (s_unserialize_backup_size != backup_size)
+	{
+		free(s_unserialize_backup);
+		s_unserialize_backup      = (u8 *)malloc(backup_size);
+		s_unserialize_backup_size = s_unserialize_backup ? backup_size : 0;
+	}
+	backup = s_unserialize_backup;
+
+	state_quiesce();
+
+	/* A state is applied block by block, so one that fails partway has
+	 * already replaced the registers and subsystems before the failing
+	 * block, and every block after it would read as zeros. Running on from
+	 * that wipes main memory under live CPU state. Snapshot the machine
+	 * first and put it back if the load does not complete. */
+	have_backup = backup && state_write(backup, backup_size);
+
+	ok = state_read(data, size);
+	if (!ok)
+	{
+		if (have_backup && state_read(backup, backup_size))
+			log_cb(RETRO_LOG_ERROR, "retro_unserialize: state not loaded; "
+				"the running game is unchanged\n");
+		else
+			log_cb(RETRO_LOG_ERROR, "retro_unserialize: state not loaded "
+				"and the running game could not be restored\n");
 	}
 
+	if (ok)
+	{
+		/* If the state was loaded before the game booted far enough for
+		 * the normal boot path to apply GameDB settings (e.g. RetroArch
+		 * Auto Load State), the game identity VMManager caches is still
+		 * the BIOS one (issue #127). The state has restored ElfCRC and
+		 * the game-started flags, so re-derive the identity from them;
+		 * it early-returns when the identity is unchanged.
+		 *
+		 * This must run while the CPU thread is still paused: the
+		 * identity change runs ApplySettings, whose config diff can reset
+		 * the EE recompiler and execution caches. */
+		VMManager::RefreshRunningGameAfterStateLoad();
+	}
 
-	return true;
+	/* Paused until the next retro_run, which presents the frame the
+	 * state left pending. */
+	return ok;
 }
 
 size_t retro_get_memory_size(unsigned id)

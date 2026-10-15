@@ -39,6 +39,11 @@
 #include <cstring>
 
 #include <libretro.h>
+#ifdef ENABLE_PCSX2_PROFILER
+#include "Profiler.h"
+#else
+#define PROFILE_SCOPE(z) do {} while (0)
+#endif
 
 #ifdef _WIN32
 #include "common/RedtapeWindows.h"
@@ -58,17 +63,19 @@ extern retro_video_refresh_t video_cb;
 
 static retro_hw_render_interface_vulkan *vulkan;
 
+#define VK_PRESENT_MAX_SYNC_INDICES 32
+
 /* The retro_vulkan_image the frontend was pointed at, one per frontend
  * sync index: the frontend keeps the pointer rather than copying it (a
  * cached-frame replay dereferences it again), so one shared struct
  * would be rewritten under a frontend still reading the previous
- * frame's. */
-static std::vector<retro_vulkan_image> vk_present_descs;
+ * frame's, and one that moved when more sync indices came into use
+ * would leave it reading freed memory. */
+static retro_vulkan_image vk_present_descs[VK_PRESENT_MAX_SYNC_INDICES];
 
 /* The texture each sync index was last handed, held here until the index
  * comes round again. The frontend reads it on its own schedule, so it
  * must not be the texture the next frame is merged into; see PresentRect. */
-#define VK_PRESENT_MAX_SYNC_INDICES 32
 static GSTexture* vk_present_textures[VK_PRESENT_MAX_SYNC_INDICES];
 
 static void vk_free_present_textures(void)
@@ -94,6 +101,38 @@ extern "C"
 	PFN_vkQueueSubmit                vkQueueSubmit_org;
 }
 
+/* After the GS was opened for a device negotiation: true and the context
+ * filled in when the renderer came up on a device. Otherwise false, with
+ * nothing left behind, so the frontend can ask again with another GPU:
+ * the GS closed and a device it made destroyed. */
+static bool vk_negotiation_finish(retro_vulkan_context *context, VkInstance instance,
+	PFN_vkGetInstanceProcAddr get_instance_proc_addr)
+{
+	if (!GSDeviceVK::GetInstance() || vk_init_info.device == VK_NULL_HANDLE)
+	{
+		MTGS::CloseGS();
+		if (vk_init_info.device != VK_NULL_HANDLE)
+		{
+			PFN_vkDestroyDevice destroy_device = (PFN_vkDestroyDevice)
+				get_instance_proc_addr(instance, "vkDestroyDevice");
+			if (destroy_device)
+				destroy_device(vk_init_info.device, nullptr);
+		}
+		vk_init_info.device                       = VK_NULL_HANDLE;
+		vk_init_info.create_device_wrapper        = nullptr;
+		vk_init_info.create_device_wrapper_opaque = nullptr;
+		return false;
+	}
+
+	context->gpu                             = vk_init_info.gpu;
+	context->device                          = vk_init_info.device;
+	context->queue                           = GSDeviceVK::GetInstance()->GetGraphicsQueue();
+	context->queue_family_index              = GSDeviceVK::GetInstance()->GetGraphicsQueueFamilyIndex();
+	context->presentation_queue              = context->queue;
+	context->presentation_queue_family_index = context->queue_family_index;
+	return true;
+}
+
 bool create_device_vulkan(retro_vulkan_context *context, VkInstance instance, VkPhysicalDevice gpu, VkSurfaceKHR surface, PFN_vkGetInstanceProcAddr get_instance_proc_addr, const char **required_device_extensions, unsigned num_required_device_extensions, const char **required_device_layers, unsigned num_required_device_layers, const VkPhysicalDeviceFeatures *required_features)
 {
 	vk_init_info.instance                       = instance;
@@ -104,6 +143,8 @@ bool create_device_vulkan(retro_vulkan_context *context, VkInstance instance, Vk
 	vk_init_info.num_required_device_layers     = num_required_device_layers;
 	vk_init_info.required_features              = required_features;
 	vk_init_info.vkGetInstanceProcAddr          = get_instance_proc_addr;
+	vk_init_info.create_device_wrapper          = nullptr;
+	vk_init_info.create_device_wrapper_opaque   = nullptr;
 
 	if(gpu != VK_NULL_HANDLE) {
 		VkPhysicalDeviceProperties props = {};
@@ -115,14 +156,67 @@ bool create_device_vulkan(retro_vulkan_context *context, VkInstance instance, Vk
 	if (!MTGS::IsOpen())
 		MTGS::TryOpenGS();
 
-	context->gpu                             = vk_init_info.gpu;
-	context->device                          = vk_init_info.device;
-	context->queue                           = GSDeviceVK::GetInstance()->GetGraphicsQueue();
-	context->queue_family_index              = GSDeviceVK::GetInstance()->GetGraphicsQueueFamilyIndex();
-	context->presentation_queue              = context->queue;
-	context->presentation_queue_family_index = context->queue_family_index;
+	return vk_negotiation_finish(context, instance, get_instance_proc_addr);
+}
 
-	return true;
+/* With no GPU named, the core picks: the first discrete one, else the first. */
+static VkPhysicalDevice vk_libretro_pick_gpu(VkInstance instance, PFN_vkGetInstanceProcAddr get_instance_proc_addr)
+{
+	VkPhysicalDevice gpus[16];
+	uint32_t count = 16;
+	uint32_t i;
+	PFN_vkEnumeratePhysicalDevices enumerate = (PFN_vkEnumeratePhysicalDevices)
+		get_instance_proc_addr(instance, "vkEnumeratePhysicalDevices");
+	PFN_vkGetPhysicalDeviceProperties get_props = (PFN_vkGetPhysicalDeviceProperties)
+		get_instance_proc_addr(instance, "vkGetPhysicalDeviceProperties");
+
+	if (!enumerate || !get_props)
+		return VK_NULL_HANDLE;
+	{
+		const VkResult res = enumerate(instance, &count, gpus);
+		if ((res != VK_SUCCESS && res != VK_INCOMPLETE) || count == 0)
+			return VK_NULL_HANDLE;
+	}
+	for (i = 0; i < count; i++)
+	{
+		VkPhysicalDeviceProperties props;
+		get_props(gpus[i], &props);
+		if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+			return gpus[i];
+	}
+	return gpus[0];
+}
+
+bool create_device2_vulkan(retro_vulkan_context *context, VkInstance instance, VkPhysicalDevice gpu, VkSurfaceKHR surface, PFN_vkGetInstanceProcAddr get_instance_proc_addr, retro_vulkan_create_device_wrapper_t create_device_wrapper, void *opaque)
+{
+	if (gpu == VK_NULL_HANDLE)
+		gpu = vk_libretro_pick_gpu(instance, get_instance_proc_addr);
+	if (gpu == VK_NULL_HANDLE)
+		return false;
+
+	vk_init_info.instance                       = instance;
+	vk_init_info.gpu                            = gpu;
+	vk_init_info.device                         = VK_NULL_HANDLE;
+	vk_init_info.required_device_extensions     = nullptr;
+	vk_init_info.num_required_device_extensions = 0;
+	vk_init_info.required_device_layers         = nullptr;
+	vk_init_info.num_required_device_layers     = 0;
+	vk_init_info.required_features              = nullptr;
+	vk_init_info.vkGetInstanceProcAddr          = get_instance_proc_addr;
+	vk_init_info.create_device_wrapper          = create_device_wrapper;
+	vk_init_info.create_device_wrapper_opaque   = opaque;
+
+	{
+		VkPhysicalDeviceProperties props = {};
+		vkGetPhysicalDeviceProperties    = (PFN_vkGetPhysicalDeviceProperties)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties");
+		vkGetPhysicalDeviceProperties(gpu, &props);
+		GSConfig.Adapter = props.deviceName;
+	}
+
+	if (!MTGS::IsOpen())
+		MTGS::TryOpenGS();
+
+	return vk_negotiation_finish(context, instance, get_instance_proc_addr);
 }
 
 const VkApplicationInfo *get_application_info_vulkan(void)
@@ -145,6 +239,14 @@ static void add_name_unique(std::vector<const char *> &list, const char *value) 
 }
 static VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice_libretro(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCreateInfo, const VkAllocationCallbacks *pAllocator, VkDevice *pDevice)
 {
+	/* v2: the frontend adds its own extensions and features. */
+	if (vk_init_info.create_device_wrapper)
+	{
+		*pDevice = vk_init_info.create_device_wrapper(physicalDevice,
+			vk_init_info.create_device_wrapper_opaque, pCreateInfo);
+		return *pDevice != VK_NULL_HANDLE ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
+	}
+
 	VkDeviceCreateInfo info = *pCreateInfo;
 	std::vector<const char *> EnabledLayerNames(info.ppEnabledLayerNames, info.ppEnabledLayerNames + info.enabledLayerCount);
 	std::vector<const char *> EnabledExtensionNames(info.ppEnabledExtensionNames, info.ppEnabledExtensionNames + info.enabledExtensionCount);
@@ -157,10 +259,13 @@ static VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice_libretro(VkPhysicalDevice p
 		add_name_unique(EnabledExtensionNames, vk_init_info.required_device_extensions[i]);
 
 	add_name_unique(EnabledExtensionNames, VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME);
-	for (unsigned i = 0; i < sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32); i++)
+	if (vk_init_info.required_features)
 	{
-		if (((VkBool32 *)vk_init_info.required_features)[i])
-			((VkBool32 *)&EnabledFeatures)[i] = VK_TRUE;
+		for (unsigned i = 0; i < sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32); i++)
+		{
+			if (((VkBool32 *)vk_init_info.required_features)[i])
+				((VkBool32 *)&EnabledFeatures)[i] = VK_TRUE;
+		}
 	}
 
 	info.enabledLayerCount       = (uint32_t)EnabledLayerNames.size();
@@ -174,6 +279,12 @@ static VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice_libretro(VkPhysicalDevice p
 
 static VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit_libretro(VkQueue queue, uint32_t submitCount, const VkSubmitInfo *pSubmits, VkFence fence)
 {
+	/* Before context_reset hands over the interface - the device is
+	 * being negotiated, and a renderer that fails to come up submits
+	 * its init work on the way down - the frontend is not using the
+	 * queue yet, and there is no lock to take. */
+	if (!vulkan)
+		return vkQueueSubmit_org(queue, submitCount, pSubmits, fence);
 	vulkan->lock_queue(vulkan->handle);
 	VkResult res = vkQueueSubmit_org(queue, submitCount, pSubmits, fence);
 	vulkan->unlock_queue(vulkan->handle);
@@ -236,7 +347,7 @@ void vk_libretro_shutdown(void)
 	memset(&vk_init_info, 0, sizeof(vk_init_info));
 	vulkan = nullptr;
 	/* The descriptors belong to the interface that was handed them. */
-	vk_present_descs.clear();
+	memset(vk_present_descs, 0, sizeof(vk_present_descs));
 }
 
 // Tweakables
@@ -585,29 +696,16 @@ static void SafeDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout& 
 
 	bool GSDeviceVK::CreateHeap()
 	{
-		/* One VkDeviceMemory is this big, and the blocks reserved below
-		 * are taken now so that a frame never asks the driver for one.
-		 * The size is the console's: everything a PS2 game has at once
-		 * lives in four megabytes of GS memory, so all of it as host
-		 * textures at this upscale is that times the scale squared, and
-		 * a block holds a couple of those. */
+		/* One VkDeviceMemory is 64 MB: a block a game can actually empty
+		 * is one small enough to be filled by one kind of thing, and a
+		 * block is only given back when it is empty. The blocks reserved
+		 * below are taken now so that a frame never asks the driver for
+		 * one. */
 		const float scale = GSConfig.UpscaleMultiplier > 0.0f ? GSConfig.UpscaleMultiplier : 1.0f;
-		u64 block = (u64)((float)VM_SIZE * scale * scale) * 2u;
+		const u64 block = 64ull * 1024ull * 1024ull;
 		VkPhysicalDeviceMemoryProperties mem_props;
 		VkPhysicalDeviceProperties dev_props;
 		gs_vk_heap_fns_t fns;
-
-		if (block < 64ull * 1024ull * 1024ull)
-			block = 64ull * 1024ull * 1024ull;
-		/* 64 MB, not 512. Two reasons, both from the last run's log.
-		 * "4096 MB reserved, 3199 MB used" is 900 MB of block tails
-		 * that nothing can reach, and a block is only given back when
-		 * it is entirely empty, which at 512 MB never happens once
-		 * allocations are scattered through it - so the trim added last
-		 * time returned nothing. A block a game can actually empty is
-		 * one small enough to be filled by one kind of thing. */
-		if (block > 64ull * 1024ull * 1024ull)
-			block = 64ull * 1024ull * 1024ull;
 
 		vkGetPhysicalDeviceMemoryProperties(vk_init_info.gpu, &mem_props);
 		vkGetPhysicalDeviceProperties(vk_init_info.gpu, &dev_props);
@@ -619,16 +717,26 @@ static void SafeDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout& 
 		fns.flush_ranges      = vkFlushMappedMemoryRanges;
 		fns.invalidate_ranges = vkInvalidateMappedMemoryRanges;
 
-		/* Keep a bounded image budget, but account for the fixed stream
-		 * buffers separately. They total 128 MB even at native resolution;
-		 * downloads take another host-visible block. Charging all of that
-		 * to the old 256 MB total left only one 64 MB image block on NVIDIA,
-		 * with unusable space stranded in the upload blocks. Ace Combat 04's
-		 * intro then repeatedly purged, waited for the GPU and failed again. */
-		const u64 stream_bytes = (u64)TEXTURE_BUFFER_SIZE + VERTEX_BUFFER_SIZE +
-			INDEX_BUFFER_SIZE + VERTEX_UNIFORM_BUFFER_SIZE + FRAGMENT_UNIFORM_BUFFER_SIZE;
-		const u64 ceiling = gs_vk_heap_budget(block,
-			(u64)((float)VM_SIZE * scale * scale) * 16u, stream_bytes);
+		/* And a ceiling, because a heap without one takes blocks until
+		 * the card is gone.
+		 *
+		 * What textures and targets may take is sixteen times what
+		 * everything a PS2 game has at once costs at this upscale,
+		 * because the budgets above the heap already come to more than
+		 * half that: the pool may hold four live sets of targets and two
+		 * of textures, the cache two of live targets, the upload buffers
+		 * one, and the hash cache its own. A ceiling under that sum
+		 * refuses allocations the renderer is entitled to make, and the
+		 * code above does not all cope with being refused.
+		 *
+		 * The buffers made once at startup come on top: buffers and images
+		 * never share a block, so they take blocks of their own, and the
+		 * last of them must not find the ceiling already reached. */
+		const u64 working_set = (u64)((float)VM_SIZE * scale * scale);
+		const u64 fixed = (u64)TEXTURE_BUFFER_SIZE + VERTEX_BUFFER_SIZE + INDEX_BUFFER_SIZE
+			+ VERTEX_UNIFORM_BUFFER_SIZE + FRAGMENT_UNIFORM_BUFFER_SIZE
+			+ 2u * (u64)EXPAND_BUFFER_SIZE;
+		const u64 ceiling = gs_vk_heap_ceiling(working_set, block, fixed);
 
 		if (!gs_vk_heap_init(&m_heap, vk_init_info.device, &mem_props, &fns, block,
 				dev_props.limits.nonCoherentAtomSize, ceiling))
@@ -639,9 +747,9 @@ static void SafeDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout& 
 		/* Taken now: two blocks of device memory for targets and
 		 * textures, one host-visible for uploads. A game that stays
 		 * inside them never reaches vkAllocateMemory again. */
-		gs_vk_heap_reserve(&m_heap, ~0u, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 2);
+		gs_vk_heap_reserve(&m_heap, ~0u, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 2);
 		gs_vk_heap_reserve(&m_heap, ~0u,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 1);
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 1, 1);
 
 		log_cb(RETRO_LOG_INFO,
 			"GS: device memory heap, %llu MB blocks, %llu MB reserved, %llu MB ceiling.\n",
@@ -664,7 +772,8 @@ static void SafeDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout& 
 
 		vkGetImageMemoryRequirements(vk_init_info.device, *image, &req);
 
-		if (!gs_vk_heap_alloc(&m_heap, &req, required, 0, alloc))
+		if (!gs_vk_heap_alloc(&m_heap, &req, required, 0,
+				ici->tiling == VK_IMAGE_TILING_LINEAR, alloc))
 		{
 			vkDestroyImage(vk_init_info.device, *image, nullptr);
 			*image = VK_NULL_HANDLE;
@@ -715,7 +824,7 @@ static void SafeDestroyDescriptorSetLayout(VkDevice dev, VkDescriptorSetLayout& 
 
 		vkGetBufferMemoryRequirements(vk_init_info.device, *buffer, &req);
 
-		if (!gs_vk_heap_alloc(&m_heap, &req, required, preferred, alloc))
+		if (!gs_vk_heap_alloc(&m_heap, &req, required, preferred, 1, alloc))
 		{
 			vkDestroyBuffer(vk_init_info.device, *buffer, nullptr);
 			*buffer = VK_NULL_HANDLE;
@@ -1609,6 +1718,15 @@ void GSDeviceVK::Destroy()
 	 * GPU below. */
 	vk_free_present_textures();
 
+	/* Create failed before there was a device: nothing on the GPU. */
+	if (vk_init_info.device == VK_NULL_HANDLE)
+	{
+		if (m_vulkan_library_held)
+			Vulkan::UnloadVulkanLibrary();
+		m_vulkan_library_held = false;
+		return;
+	}
+
 	EndRenderPass();
 	if (GetCurrentCommandBuffer() != VK_NULL_HANDLE)
 	{
@@ -1640,7 +1758,9 @@ void GSDeviceVK::Destroy()
 		m_heap_ready = false;
 	}
 
-	Vulkan::UnloadVulkanLibrary();
+	if (m_vulkan_library_held)
+		Vulkan::UnloadVulkanLibrary();
+	m_vulkan_library_held = false;
 }
 
 GSDevice::PresentResult GSDeviceVK::BeginPresent(bool frame_skip)
@@ -1673,6 +1793,8 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 		log_cb(RETRO_LOG_ERROR, "Failed to load Vulkan library. Does your GPU and/or driver support Vulkan?\n");
 		return false;
 	}
+	/* Released in Destroy, which follows a failed Create too. */
+	m_vulkan_library_held = true;
 
 	// Read device physical memory properties, we need it for allocating buffers
 	vkGetPhysicalDeviceProperties(vk_init_info.gpu, &m_device_properties);
@@ -1694,7 +1816,6 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 	if (!Vulkan::LoadVulkanInstanceFunctions(vk_init_info.instance))
 	{
 		log_cb(RETRO_LOG_ERROR, "Failed to load Vulkan instance functions\n");
-		Vulkan::UnloadVulkanLibrary();
 		return false;
 	}
 
@@ -1711,7 +1832,6 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 			|| !CreateTextureStreamBuffer())
 	{
 		log_cb(RETRO_LOG_ERROR, "Failed to create Vulkan context\n");
-		Vulkan::UnloadVulkanLibrary();
 		return false;
 	}
 
@@ -1858,9 +1978,9 @@ GSTexture* GSDeviceVK::CreateSurface(GSTexture::Type type, int width, int height
 	return tex.release();
 }
 
-std::unique_ptr<GSDownloadTexture> GSDeviceVK::CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format)
+GSDownloadTexturePtr GSDeviceVK::CreateDownloadTexture(u32 width, u32 height, GSTexture::Format format)
 {
-	return GSDownloadTextureVK::Create(width, height, format);
+	return GSDownloadTexturePtr(GSDownloadTextureVK::Create(width, height, format).release());
 }
 
 void GSDeviceVK::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY)
@@ -1970,6 +2090,10 @@ void GSDeviceVK::StretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 void GSDeviceVK::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect)
 {
 	GSTextureVK* tex = (GSTextureVK*)sTex;
+	/* The frontend's part: its slot, the wait on it, set_image and the
+	 * video callback, which on a threaded video path holds until a slot
+	 * frees. Its own zone, so the vsync zone is the render. */
+	PROFILE_SCOPE(ZONE_GS_HANDOVER);
 	if (tex)
 	{
 		/* Blanking enforce, see 'GSRenderer::VSync()' */
@@ -2014,8 +2138,6 @@ void GSDeviceVK::PresentRect(GSTexture* sTex, const GSVector4& sRect, GSTexture*
 				sync_slots = 1;
 			if (sync_index >= sync_slots)
 				sync_index = 0;
-			if (vk_present_descs.size() < sync_slots)
-				vk_present_descs.resize(sync_slots);
 			vulkan->wait_sync_index(vulkan->handle);
 			SyncIndexWaited(sync_slots);
 
@@ -2281,20 +2403,20 @@ void GSDeviceVK::DrawStretchRect(const GSVector4& sRect, const GSVector4& dRect,
 		DrawPrimitive();
 }
 
-void GSDeviceVK::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize)
+void GSDeviceVK::UpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex, u32 dOffset, u32 dSize, u32 samples)
 {
 	// Super annoying, but apparently NVIDIA doesn't like floats/ints packed together in the same vec4?
 	struct Uniforms
 	{
-		u32 offsetX, offsetY, dOffset, pad1;
+		u32 offsetX, offsetY, dOffset, samples;
 		float scale;
 		float pad2[3];
 	};
 
-	const Uniforms uniforms = {offsetX, offsetY, dOffset, 0, sScale, {}};
+	const Uniforms uniforms = {offsetX, offsetY, dOffset, samples, sScale, {}};
 	SetUtilityPushConstants(&uniforms, sizeof(uniforms));
 
-	const GSVector4 dRect(0, 0, dSize, 1);
+	const GSVector4 dRect(0, 0, dSize * samples, samples);
 	const ShaderConvert shader = (dSize == 16) ? ShaderConvert::CLUT_4 : ShaderConvert::CLUT_8;
 	DoStretchRect(static_cast<GSTextureVK*>(sTex), GSVector4::zero(), static_cast<GSTextureVK*>(dTex), dRect,
 		m_convert[static_cast<int>(shader)], false, true);
@@ -2306,12 +2428,13 @@ void GSDeviceVK::ConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offs
 	{
 		u32 SBW;
 		u32 DBW;
-		u32 pad1[2];
+		u32 PageOffset;
+		u32 pad1;
 		float ScaleFactor;
 		float pad2[3];
 	};
 
-	const Uniforms uniforms = {SBW, DBW, {}, sScale, {}};
+	const Uniforms uniforms = {SBW, DBW, IndexedConversionPageOffset(offsetX, offsetY, SBW), 0, sScale, {}};
 	SetUtilityPushConstants(&uniforms, sizeof(uniforms));
 
 	const ShaderConvert shader = ShaderConvert::RGBA_TO_8I;
@@ -2336,6 +2459,15 @@ void GSDeviceVK::FilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32
 	SetUtilityPushConstants(&uniforms, sizeof(uniforms));
 
 	const ShaderConvert shader = ShaderConvert::DOWNSAMPLE_COPY;
+	DoStretchRect(static_cast<GSTextureVK*>(sTex), GSVector4::zero(), static_cast<GSTextureVK*>(dTex), dRect,
+		m_convert[static_cast<int>(shader)], false, true);
+}
+
+void GSDeviceVK::MoveTexels(GSTexture* sTex, GSTexture* dTex, const GSVector4& dRect, const MoveTexelsConstants& cb)
+{
+	SetUtilityPushConstants(&cb, sizeof(cb));
+
+	const ShaderConvert shader = ShaderConvert::MOVE_TEXELS;
 	DoStretchRect(static_cast<GSTextureVK*>(sTex), GSVector4::zero(), static_cast<GSTextureVK*>(dTex), dRect,
 		m_convert[static_cast<int>(shader)], false, true);
 }
@@ -3348,7 +3480,8 @@ void GSDeviceVK::DestroyResources()
 {
 	VkDevice m_device = vk_init_info.device;
 
-	ExecuteCommandBuffer(true);
+	if (GetCurrentCommandBuffer() != VK_NULL_HANDLE)
+		ExecuteCommandBuffer(true);
 
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
 		FreeGlobalDescriptorSet(m_tfx_ubo_descriptor_set);
@@ -3565,6 +3698,8 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_ZCLAMP", sel.zclamp);
 	AddMacro(ss, "PS_PABE", sel.pabe);
 	AddMacro(ss, "PS_SCANMSK", sel.scanmsk);
+	AddMacro(ss, "PS_SAMPLE_MAP", sel.sample_map);
+	AddMacro(ss, "PS_NATIVE_TAPS", sel.native_taps);
 	AddMacro(ss, "PS_TEX_IS_FB", sel.tex_is_fb);
 	AddMacro(ss, "PS_NO_COLOR", sel.no_color);
 	AddMacro(ss, "PS_NO_COLOR1", sel.no_color1);
@@ -4539,6 +4674,8 @@ void GSDeviceVK::RenderHW(GSHWDrawConfig& config)
 			{
 				if (date_image)
 					Recycle(date_image);
+				if (draw_rt_clone)
+					Recycle(draw_rt_clone);
 				return;
 			}
 

@@ -648,6 +648,86 @@ void memjit_write_end(void)   { }
 #endif
 
 /* ------------------------------------------------------------------ */
+/* JIT code memory                                                     */
+/* ------------------------------------------------------------------ */
+
+void *memjit_alloc(size_t len)
+{
+#if defined(_WIN32) && !defined(_XBOX)
+   return VirtualAlloc(NULL, len, MEM_COMMIT | MEM_RESERVE,
+         PAGE_EXECUTE_READWRITE);
+#elif defined(HAVE_MMAN) && !defined(__EMSCRIPTEN__) && defined(MAP_ANONYMOUS)
+   int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+   void *p;
+   /* On macOS on Apple Silicon a plain executable mapping is refused;
+    * MAP_JIT is the one that is granted, and it is then write-xor-execute
+    * per thread, switched with memjit_write_begin/end above. It is macOS
+    * only: iOS and tvOS need an entitlement for it that a core does not
+    * have, and keep the plain mapping. */
+#if defined(MAP_JIT) && defined(__APPLE__) && defined(__aarch64__) \
+   && defined(TARGET_OS_OSX) && TARGET_OS_OSX
+   flags |= MAP_JIT;
+#endif
+   p = mmap(NULL, len, PROT_READ | PROT_WRITE | PROT_EXEC, flags, -1, 0);
+   return (p == MAP_FAILED) ? NULL : p;
+#else
+   /* No mmap: DOS, the consoles, Emscripten. */
+   (void)len;
+   return NULL;
+#endif
+}
+
+void memjit_free(void *addr, size_t len)
+{
+   if (!addr)
+      return;
+#if defined(_WIN32) && !defined(_XBOX)
+   (void)len;
+   VirtualFree(addr, 0, MEM_RELEASE);
+#elif defined(HAVE_MMAN) && !defined(__EMSCRIPTEN__) && defined(MAP_ANONYMOUS)
+   munmap(addr, len);
+#else
+   (void)len;
+#endif
+}
+
+/* ------------------------------------------------------------------ */
+/* Zeroing a range of pages                                            */
+/* ------------------------------------------------------------------ */
+
+bool memzero_pages(void *addr, size_t len)
+{
+   if (!addr || !len)
+      return true;
+#if defined(_WIN32) && !defined(_XBOX)
+   /* Decommitting and recommitting hands the pages back and takes fresh
+    * zeroed ones, at page granularity within the region. Once the
+    * decommit has succeeded the range is no longer backed, so a failed
+    * recommit cannot fall through to memset: that would fault. The
+    * range is reported lost instead, and the caller must not touch it. */
+   if (VirtualFree(addr, len, MEM_DECOMMIT))
+   {
+      if (VirtualAlloc(addr, len, MEM_COMMIT, PAGE_READWRITE))
+         return true;
+      return false;
+   }
+#elif defined(__linux__) && defined(MADV_DONTNEED)
+   /* Linux and Android zero-fill private anonymous memory on the next
+    * touch after MADV_DONTNEED; on every other system the advice may
+    * leave the contents in place, so it is only taken here. */
+   if (madvise(addr, len, MADV_DONTNEED) == 0)
+      return true;
+#elif defined(HAVE_MMAN) && !defined(__EMSCRIPTEN__) && defined(MAP_FIXED)
+   /* Fresh zero pages mapped over the range. */
+   if (mmap(addr, len, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != MAP_FAILED)
+      return true;
+#endif
+   memset(addr, 0, len);
+   return true;
+}
+
+/* ------------------------------------------------------------------ */
 /* A reservation that shared memory is mapped into at several places   */
 /* ------------------------------------------------------------------ */
 
@@ -718,19 +798,28 @@ static bool memshm_placeholder_apis(void)
  * flat array is right for the few tens of ranges a fastmem window
  * splits into, and keeps the whole thing allocation-light. */
 #define MEMSHM_MAX_PLACEHOLDERS 256
+#endif
 
 typedef struct
 {
    size_t start;
    size_t end;
 } memshm_range_t;
-#endif
 
 struct memshm_area
 {
    unsigned char *base;
    size_t         len;
-   size_t         mappings;
+   /* The mappings the area holds, a bit a page: mapped[] for every page
+    * one covers, starts[] for its first. Map refuses a range touching a
+    * mapped page and unmap takes only exactly one mapping: on POSIX both
+    * write over whatever range they are given (MAP_FIXED, PROT_NONE),
+    * and Windows unmaps a view whole. One allocation, starts[] after
+    * mapped[]; a 4 GB window of 4 KB pages costs 256 KB. */
+   uint32_t      *mapped;
+   uint32_t      *starts;
+   size_t         unit;   /* bytes a bit stands for */
+   size_t         pages;
 #if defined(_WIN32) && !defined(_XBOX)
    memshm_range_t ranges[MEMSHM_MAX_PLACEHOLDERS];
    int            range_count;
@@ -857,6 +946,21 @@ static void memshm_legacy_release(memshm_area_t *a, size_t first, size_t count)
 
 #endif
 
+#if (defined(_WIN32) && !defined(_XBOX)) || (defined(HAVE_MMAN) && !defined(__EMSCRIPTEN__) && defined(MAP_ANONYMOUS))
+static bool memshm_area_track_init(memshm_area_t *a)
+{
+   size_t words;
+   if (!(a->unit = mempagesize()))
+      a->unit = 4096;
+   a->pages = a->len / a->unit + ((a->len % a->unit) ? 1 : 0);
+   words    = (a->pages + 31) / 32;
+   if (!(a->mapped = (uint32_t*)calloc(words * 2, sizeof(uint32_t))))
+      return false;
+   a->starts = a->mapped + words;
+   return true;
+}
+#endif
+
 memshm_area_t *memshm_area_create(size_t len)
 {
 #if (defined(_WIN32) && !defined(_XBOX)) || (defined(HAVE_MMAN) && !defined(__EMSCRIPTEN__) && defined(MAP_ANONYMOUS))
@@ -899,11 +1003,18 @@ memshm_area_t *memshm_area_create(size_t len)
       a->slot       = gran;
       a->slot_count = slots;
       a->legacy     = 1;
+      if (!memshm_area_track_init(a))
+      {
+         free(a->reserved);
+         free(a);
+         return NULL;
+      }
       for (i = 0; i < slots; i++)
       {
          if (!VirtualAlloc(a->base + i * gran, gran, MEM_RESERVE, PAGE_NOACCESS))
          {
             memshm_legacy_release(a, 0, i);
+            free(a->mapped);
             free(a->reserved);
             free(a);
             return NULL;
@@ -970,6 +1081,12 @@ memshm_area_t *memshm_area_create(size_t len)
    }
    a->base = (unsigned char*)alloc;
    a->len  = len;
+   if (!memshm_area_track_init(a))
+   {
+      VirtualFree(alloc, 0, MEM_RELEASE);
+      free(a);
+      return NULL;
+   }
    a->ranges[0].start = 0;
    a->ranges[0].end   = len;
    a->range_count     = 1;
@@ -989,6 +1106,12 @@ memshm_area_t *memshm_area_create(size_t len)
    }
    a->base = (unsigned char*)alloc;
    a->len  = len;
+   if (!memshm_area_track_init(a))
+   {
+      munmap(alloc, len);
+      free(a);
+      return NULL;
+   }
    return a;
 #else
    (void)len;
@@ -1014,6 +1137,7 @@ void memshm_area_free(memshm_area_t *area)
             UnmapViewOfFile(area->base + i * area->slot);
       }
       free(area->reserved);
+      free(area->mapped);
       free(area);
       return;
    }
@@ -1022,6 +1146,7 @@ void memshm_area_free(memshm_area_t *area)
 #elif defined(HAVE_MMAN) && !defined(__EMSCRIPTEN__) && defined(MAP_FIXED) && defined(MAP_ANONYMOUS)
    munmap(area->base, area->len);
 #endif
+   free(area->mapped);
    free(area);
 }
 
@@ -1035,6 +1160,103 @@ size_t memshm_area_size(const memshm_area_t *area)
    return area ? area->len : 0;
 }
 
+#if (defined(_WIN32) && !defined(_XBOX)) || (defined(HAVE_MMAN) && !defined(__EMSCRIPTEN__) && defined(MAP_FIXED) && defined(MAP_ANONYMOUS))
+/* Offset of [at, at + len) within the reservation, or false if any part
+ * of it falls outside. The address is only known to belong to the area
+ * once this says so, so it is carried as uintptr_t: subtracting an
+ * unrelated pointer from base is undefined, and the map is destructive
+ * enough - MAP_FIXED replaces whatever is already there - that the
+ * check cannot be left to the caller. Ordered so neither the addition
+ * nor the subtraction can wrap. */
+static bool memshm_area_offset(const memshm_area_t *area, const void *at,
+      size_t len, size_t *off)
+{
+   uintptr_t base;
+   uintptr_t addr;
+
+   if (!area || !at || !len)
+      return false;
+   base = (uintptr_t)area->base;
+   addr = (uintptr_t)at;
+   if (     addr < base
+       ||   len > area->len
+       ||  (addr - base) > (area->len - len))
+      return false;
+   *off = (size_t)(addr - base);
+   return true;
+}
+
+#define MEMSHM_BIT(m, i)     (((m)[(i) >> 5] >> ((i) & 31)) & 1u)
+#define MEMSHM_SET(m, i)     ((m)[(i) >> 5] |=  (1u << ((i) & 31)))
+#define MEMSHM_CLEAR(m, i)   ((m)[(i) >> 5] &= ~(1u << ((i) & 31)))
+
+/* The pages [*first, *first + *count) that [off, off + len) covers; false
+ * when off is not on a page, which no mapping is. */
+static bool memshm_area_pages(const memshm_area_t *area, size_t off,
+      size_t len, size_t *first, size_t *count)
+{
+   if (off % area->unit)
+      return false;
+   *first = off / area->unit;
+   *count = len / area->unit + ((len % area->unit) ? 1 : 0);
+   return *count && *count <= area->pages - *first;
+}
+
+/* No page of [off, off + len) is mapped. */
+static bool memshm_area_can_map(const memshm_area_t *area,
+      size_t off, size_t len)
+{
+   size_t p, first, count;
+   if (!memshm_area_pages(area, off, len, &first, &count))
+      return false;
+   for (p = first; p < first + count; p++)
+      if (MEMSHM_BIT(area->mapped, p))
+         return false;
+   return true;
+}
+
+/* [off, off + len) is exactly one mapping: it starts there, covers
+ * every page, has no other start inside and does not run on past. */
+static bool memshm_area_is_map(const memshm_area_t *area,
+      size_t off, size_t len)
+{
+   size_t p, first, count;
+   if (     !memshm_area_pages(area, off, len, &first, &count)
+         || !MEMSHM_BIT(area->starts, first))
+      return false;
+   for (p = first; p < first + count; p++)
+      if (     !MEMSHM_BIT(area->mapped, p)
+            || (p != first && MEMSHM_BIT(area->starts, p)))
+         return false;
+   return p == area->pages
+       || !MEMSHM_BIT(area->mapped, p)
+       || MEMSHM_BIT(area->starts, p);
+}
+
+/* Checked by memshm_area_can_map() before the OS is asked. */
+static void memshm_area_add_map(memshm_area_t *area,
+      size_t off, size_t len)
+{
+   size_t p, first, count;
+   if (!memshm_area_pages(area, off, len, &first, &count))
+      return;
+   for (p = first; p < first + count; p++)
+      MEMSHM_SET(area->mapped, p);
+   MEMSHM_SET(area->starts, first);
+}
+
+static void memshm_area_drop_map(memshm_area_t *area,
+      size_t off, size_t len)
+{
+   size_t p, first, count;
+   if (!memshm_area_pages(area, off, len, &first, &count))
+      return;
+   for (p = first; p < first + count; p++)
+      MEMSHM_CLEAR(area->mapped, p);
+   MEMSHM_CLEAR(area->starts, first);
+}
+#endif
+
 unsigned char *memshm_area_map(memshm_area_t *area, void *handle,
       size_t offset, void *at, size_t len, int prot)
 {
@@ -1042,13 +1264,15 @@ unsigned char *memshm_area_map(memshm_area_t *area, void *handle,
    size_t map_off;
 #if defined(MEMSHM_HAVE_PLACEHOLDERS)
    size_t old_end;
+   size_t range_start;
    int    idx;
+   int    need;
    DWORD  page_prot;
 #endif
 
-   if (!area || !at || !len)
+   if (     !memshm_area_offset(area, at, len, &map_off)
+         || !memshm_area_can_map(area, map_off, len))
       return NULL;
-   map_off = (unsigned char*)at - area->base;
 
    if (area->legacy)
    {
@@ -1075,7 +1299,7 @@ unsigned char *memshm_area_map(memshm_area_t *area, void *handle,
                (DWORD)(offset & 0xFFFFFFFFu), len, at);
          if (view == at)
          {
-            area->mappings++;
+            memshm_area_add_map(area, map_off, len);
             return (unsigned char*)view;
          }
          if (view)
@@ -1087,36 +1311,60 @@ unsigned char *memshm_area_map(memshm_area_t *area, void *handle,
    }
 
 #if defined(MEMSHM_HAVE_PLACEHOLDERS)
-   idx     = memshm_find_range(area, map_off);
+   idx         = memshm_find_range(area, map_off);
    if (idx < 0)
       return NULL;   /* not a placeholder: something is still mapped there */
-   old_end = area->ranges[idx].end;
+   range_start = area->ranges[idx].start;
+   old_end     = area->ranges[idx].end;
+   /* The whole range has to be inside that placeholder, not just its
+    * first byte: a len reaching past the end would split at an offset
+    * the kernel does not have a placeholder for, and record a range
+    * running backwards. */
+   if (len > old_end - map_off)
+      return NULL;
 
-   /* Split off anything to the left of this range, then anything to
-    * the right; what is left is exactly the range being replaced. */
-   if (map_off != area->ranges[idx].start)
+   /* Each split the kernel makes has to be recordable, so refuse a full
+    * table before touching the OS rather than after. */
+   need = 0;
+   if (map_off != range_start)
+      need++;
+   if ((map_off + len) != old_end)
+      need++;
+   if ((area->range_count + need) > MEMSHM_MAX_PLACEHOLDERS)
+      return NULL;
+
+   /* Split off anything to the left of this range, then anything to the
+    * right; what is left is exactly the range being replaced. The OS
+    * call comes first in each step and the table records the split only
+    * once the kernel has made it, so every failure here returns with
+    * the two still describing the same thing. */
+   if (map_off != range_start)
    {
-      area->ranges[idx].end = map_off;
-      if (!VirtualFree(area->base + area->ranges[idx].start,
-               map_off - area->ranges[idx].start,
+      if (!VirtualFree(area->base + range_start, map_off - range_start,
                MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER))
          return NULL;
+      area->ranges[idx].end = map_off;
+      if (    !memshm_insert_range(area, map_off, old_end)
+          || ((idx = memshm_find_range(area, map_off)) < 0))
+         return NULL;
    }
-   else
-      memshm_erase_range(area, idx);
 
    if ((map_off + len) != old_end)
    {
-      if (!memshm_insert_range(area, map_off + len, old_end))
-         return NULL;
       if (!VirtualFree(area->base + map_off, len,
                MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER))
          return NULL;
+      area->ranges[idx].start = map_off + len;
+      if (    !memshm_insert_range(area, map_off, map_off + len)
+          || ((idx = memshm_find_range(area, map_off)) < 0))
+         return NULL;
    }
 
+   /* ranges[idx] is now exactly the placeholder being replaced. */
    if (!s_MapViewOfFile3((HANDLE)handle, GetCurrentProcess(), at,
             (ULONG64)offset, len, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0))
-      return NULL;
+      return NULL;   /* still a free placeholder, and still recorded as one */
+   memshm_erase_range(area, idx);
 
    if (prot & PROT_READ)
       page_prot = (prot & PROT_EXEC)
@@ -1129,20 +1377,34 @@ unsigned char *memshm_area_map(memshm_area_t *area, void *handle,
       DWORD old_prot;
       VirtualProtect(at, len, page_prot, &old_prot);
    }
-   area->mappings++;
+   memshm_area_add_map(area, map_off, len);
    return (unsigned char*)at;
 #else
    return NULL;
 #endif
 #elif defined(HAVE_MMAN) && !defined(__EMSCRIPTEN__) && defined(MAP_FIXED) && defined(MAP_ANONYMOUS)
-   void *p;
-   if (!area || !at || !len)
+   void  *p;
+   size_t map_off;
+   size_t span = len;
+   size_t page = mempagesize();
+
+   /* mmap rounds the length up to a page and MAP_FIXED replaces
+    * whatever is mapped over the whole of it, so the rounded span is
+    * what has to fit inside the reservation. */
+   if (page && (span % page))
+   {
+      if (span > (((size_t)-1) - page))
+         return NULL;
+      span += page - (span % page);
+   }
+   if (     !memshm_area_offset(area, at, span, &map_off)
+         || !memshm_area_can_map(area, map_off, span))
       return NULL;
    p = mmap(at, len, prot, MAP_SHARED | MAP_FIXED,
          MEMSHM_FD(handle), (off_t)offset);
    if (p == MAP_FAILED)
       return NULL;
-   area->mappings++;
+   memshm_area_add_map(area, map_off, span);
    return (unsigned char*)p;
 #else
    (void)area; (void)handle; (void)offset; (void)at; (void)len; (void)prot;
@@ -1155,12 +1417,13 @@ bool memshm_area_unmap(memshm_area_t *area, void *at, size_t len)
 #if defined(_WIN32) && !defined(_XBOX)
    size_t map_off;
 #if defined(MEMSHM_HAVE_PLACEHOLDERS)
-   int    left, right;
+   int    cur, left, right;
 #endif
 
-   if (!area || !at || !len)
+   /* Only a mapping exactly as made: a view is unmapped whole. */
+   if (     !memshm_area_offset(area, at, len, &map_off)
+         || !memshm_area_is_map(area, map_off, len))
       return false;
-   map_off = (unsigned char*)at - area->base;
 
    if (area->legacy)
    {
@@ -1173,51 +1436,58 @@ bool memshm_area_unmap(memshm_area_t *area, void *at, size_t len)
       /* Put the reservations back at once: an unreserved hole in the
        * span is an address another allocation can take, and then the
        * next map there fails for good. */
+      memshm_area_drop_map(area, map_off, len);
       if (!memshm_legacy_reserve(area, first, count))
          return false;
-      area->mappings--;
       return true;
    }
 
 #if defined(MEMSHM_HAVE_PLACEHOLDERS)
    if (!s_UnmapViewOfFile2(GetCurrentProcess(), at, MEM_PRESERVE_PLACEHOLDER))
       return false;
+   memshm_area_drop_map(area, map_off, len);
+
+   /* The range is a free placeholder of its own now, whether or not it
+    * goes on to coalesce with a neighbour, so record that before either
+    * attempt: each VirtualFree below can fail, and the table has to
+    * describe the kernel either way. */
+   if (    !memshm_insert_range(area, map_off, map_off + len)
+       || ((cur = memshm_find_range(area, map_off)) < 0))
+      return false;
 
    /* Coalesce with the placeholder on the left, if the range that ends
     * where this one starts is one. */
    left = (map_off > 0) ? memshm_find_range(area, map_off - 1) : -1;
-   if (left >= 0)
+   if (left >= 0 && left != cur)
    {
-      area->ranges[left].end = map_off + len;
       /* Checked: KernelBase validates the flags and forwards, so the
        * kernel is what decides whether this really is two adjacent
        * placeholders. A disagreement between these ranges and the VADs
        * comes back here, and silently ignoring it would let the two
        * drift apart until a later map fails for no visible reason. */
       if (!VirtualFree(area->base + area->ranges[left].start,
-            area->ranges[left].end - area->ranges[left].start,
+            area->ranges[cur].end - area->ranges[left].start,
             MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS))
          return false;
-   }
-   else
-   {
-      if (!memshm_insert_range(area, map_off, map_off + len))
-         return false;
-      left = memshm_find_range(area, map_off);
+      area->ranges[left].end = area->ranges[cur].end;
+      memshm_erase_range(area, cur);
+      /* left sorts below cur, so erasing cur leaves its index alone. */
+      cur = left;
    }
 
-   /* And with the one on the right. */
-   right = ((map_off + len) < area->len) ? memshm_find_range(area, map_off + len) : -1;
-   if (right >= 0 && right != left)
+   /* And with the one on the right, re-found because the merge above
+    * shifts every index past it down by one. */
+   right = ((map_off + len) < area->len)
+      ? memshm_find_range(area, map_off + len) : -1;
+   if (right >= 0 && right != cur)
    {
-      area->ranges[left].end = area->ranges[right].end;
-      memshm_erase_range(area, right);
-      if (!VirtualFree(area->base + area->ranges[left].start,
-            area->ranges[left].end - area->ranges[left].start,
+      if (!VirtualFree(area->base + area->ranges[cur].start,
+            area->ranges[right].end - area->ranges[cur].start,
             MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS))
          return false;
+      area->ranges[cur].end = area->ranges[right].end;
+      memshm_erase_range(area, right);
    }
-   area->mappings--;
    return true;
 /* MAP_ANONYMOUS as well as MAP_FIXED: the body below needs both, and
  * memshm_area_create's guard requires both, so a platform with only one
@@ -1227,13 +1497,26 @@ bool memshm_area_unmap(memshm_area_t *area, void *at, size_t len)
    return false;
 #endif
 #elif defined(HAVE_MMAN) && !defined(__EMSCRIPTEN__) && defined(MAP_FIXED) && defined(MAP_ANONYMOUS)
-   if (!area || !at || !len)
+   size_t map_off;
+   size_t span = len;
+   size_t page = mempagesize();
+
+   if (page && (span % page))
+   {
+      if (span > (((size_t)-1) - page))
+         return false;
+      span += page - (span % page);
+   }
+   /* Only a mapping exactly as made: PROT_NONE covers whatever range
+    * it is given. */
+   if (     !memshm_area_offset(area, at, span, &map_off)
+         || !memshm_area_is_map(area, map_off, span))
       return false;
    /* Anonymous PROT_NONE back over the range: the reservation is whole
     * again and the kernel merges the VMAs. */
    if (mmap(at, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED)
       return false;
-   area->mappings--;
+   memshm_area_drop_map(area, map_off, span);
    return true;
 #else
    (void)area; (void)at; (void)len;

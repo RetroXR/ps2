@@ -420,7 +420,6 @@ static const char* s_gs_hw_fix_names[] = {
 	"cpuSpriteRenderBW",
 	"cpuSpriteRenderLevel",
 	"cpuCLUTRender",
-	"gpuTargetCLUT",
 	"gpuPaletteConversion",
 	"minimumBlendingLevel",
 	"maximumBlendingLevel",
@@ -695,9 +694,6 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::CPUCLUTRender:
 			return (config.UserHacks_CPUCLUTRender == value);
 
-		case GSHWFixId::GPUTargetCLUT:
-			return (static_cast<int>(config.UserHacks_GPUTargetCLUTMode) == value);
-
 		case GSHWFixId::GPUPaletteConversion:
 			return (config.GPUPaletteConversion == ((value > 1) ? (config.TexturePreloading == TexturePreloadingLevel::Full) : (value != 0)));
 
@@ -861,7 +857,9 @@ u32 GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& 
 				break;
 
 			case GSHWFixId::NativeScaling:
-				config.UserHacks_NativeScaling = static_cast<GSNativeScaling>(value);
+				/* The user's own setting of the option stands over the fix. */
+				if (!config.NativeScalingSet)
+					config.UserHacks_NativeScaling = static_cast<GSNativeScaling>(value);
 				break;
 
 			case GSHWFixId::TexturePreloading:
@@ -894,13 +892,6 @@ u32 GameDatabaseSchema::GameEntry::applyGSHardwareFixes(Pcsx2Config::GSOptions& 
 			case GSHWFixId::CPUCLUTRender:
 				config.UserHacks_CPUCLUTRender = value;
 				break;
-
-			case GSHWFixId::GPUTargetCLUT:
-			{
-				if (value >= 0 && value <= static_cast<int>(GSGPUTargetCLUTMode::InsideTarget))
-					config.UserHacks_GPUTargetCLUTMode = static_cast<GSGPUTargetCLUTMode>(value);
-			}
-			break;
 
 			case GSHWFixId::GPUPaletteConversion:
 			{

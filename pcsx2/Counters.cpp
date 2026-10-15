@@ -29,6 +29,7 @@
 
 #include "ps2/HwInternal.h"
 #include "VMManager.h"
+#include "MTGSOwner.h"
 #include "CDVD/CDVD.h"     /* cdvdGetDiscRegion */
 #include "FW.h"             /* FWvsync */
 #include "ps2/BiosTools.h" /* BiosRegion */
@@ -216,10 +217,16 @@ void rcntInit(void)
 	counters[2].interrupt = 11;
 	counters[3].interrupt = 12;
 
+	/* Both start their render periods now, with those periods' lengths:
+	 * a reset finds the counters in whatever phase the old machine left
+	 * them, and a length kept from that phase brings the first vsync
+	 * early. */
 	hsyncCounter.Mode = MODE_HRENDER;
 	hsyncCounter.startCycle = cpuRegs.cycle;
+	hsyncCounter.deltaCycles = vSyncInfo.hRender;
 	vsyncCounter.Mode = MODE_VRENDER;
 	vsyncCounter.startCycle = cpuRegs.cycle;
+	vsyncCounter.deltaCycles = vSyncInfo.Render;
 
 	for (i = 0; i < 4; i++)
 		rcntReset(i);
@@ -587,7 +594,9 @@ static __fi void VSyncStart(u64 sCycle)
 	//The GS needs to be told at the start of a vsync else it loses half of its picture (could be responsible for some halfscreen issues)
 	//We got away with it before i think due to our awful GS timing, but now we have it right (ish)
 	MTGS::PostVsyncStart();
-	if (VMManager::Internal::IsExecutionInterrupted())
+	/* A pause stops the EE only at a vsync a drain consumed: MTGSOwner.h. */
+	if (MTGS_EE_STOPS(VMManager::Internal::IsExecutionInterrupted(),
+			VMManager::GetState() == VMState::Paused, mtgs_vsync_drained))
 		Cpu->ExitExecution();
 
 	hwIntcIrq(INTC_VBLANK_S);
@@ -961,7 +970,7 @@ __fi u16 rcntRead32(u32 mem)
 	return psHu16(mem);
 }
 
-__fi bool rcntWrite32(u32 mem, mem32_t& value)
+__fi bool rcntWrite32(u32 mem, mem32_t *value)
 {
 	// [TODO] : counters should actually just use the EE's hw register space for storing
 	// count, mode, target, and hold. This will allow for a simplified handler for register
@@ -970,56 +979,77 @@ __fi bool rcntWrite32(u32 mem, mem32_t& value)
 	switch(mem)
 	{
 		case(RCNT0_COUNT):
-			return rcntWcount(0, value), false;
+			return rcntWcount(0, *value), false;
 		case(RCNT0_MODE):
-			return rcntWmode(0, value), false;
+			return rcntWmode(0, *value), false;
 		case(RCNT0_TARGET):
-			return rcntWtarget(0, value), false;
+			return rcntWtarget(0, *value), false;
 		case(RCNT0_HOLD):
-			return rcntWhold(0, value), false;
+			return rcntWhold(0, *value), false;
 
 		case(RCNT1_COUNT):
-			return rcntWcount(1, value), false;
+			return rcntWcount(1, *value), false;
 		case(RCNT1_MODE):
-			return rcntWmode(1, value), false;
+			return rcntWmode(1, *value), false;
 		case(RCNT1_TARGET):
-			return rcntWtarget(1, value), false;
+			return rcntWtarget(1, *value), false;
 		case(RCNT1_HOLD):
-			return rcntWhold(1, value), false;
+			return rcntWhold(1, *value), false;
 
 		case(RCNT2_COUNT):
-			return rcntWcount(2, value), false;
+			return rcntWcount(2, *value), false;
 		case(RCNT2_MODE):
-			return rcntWmode(2, value), false;
+			return rcntWmode(2, *value), false;
 		case(RCNT2_TARGET):
-			return rcntWtarget(2, value), false;
+			return rcntWtarget(2, *value), false;
 
 		case(RCNT3_COUNT):
-			return rcntWcount(3, value), false;
+			return rcntWcount(3, *value), false;
 		case(RCNT3_MODE):
-			return rcntWmode(3, value), false;
+			return rcntWmode(3, *value), false;
 		case(RCNT3_TARGET):
-			return rcntWtarget(3, value), false;
+			return rcntWtarget(3, *value), false;
 	}
 
 	// unhandled .. do memory writeback.
 	return true;
 }
 
-bool SaveStateBase::rcntFreeze()
+bool rcntFreeze(SaveStateBase *s)
 {
-	Freeze(counters);
-	Freeze(hsyncCounter);
-	Freeze(vsyncCounter);
-	Freeze(nextDeltaCounter);
-	Freeze(nextStartCounter);
-	Freeze(vSyncInfo);
-	Freeze(gsVideoMode);
-	Freeze(gsIsInterlaced);
-	Freeze(gates);
+	SaveState_Freeze(s, counters);
+	SaveState_Freeze(s, hsyncCounter);
+	SaveState_Freeze(s, vsyncCounter);
+	SaveState_Freeze(s, nextDeltaCounter);
+	SaveState_Freeze(s, nextStartCounter);
+	SaveState_Freeze(s, vSyncInfo);
+	SaveState_Freeze(s, gsVideoMode);
+	SaveState_Freeze(s, gsIsInterlaced);
+	SaveState_Freeze(s, gates);
 
-	if (IsLoading())
-		cpuRcntSet();
+	if (SaveState_IsLoading(s))
+	{
+		int i;
 
-	return IsOkay();
+		/* rate is a divisor -- rcntRcount and the update path all divide
+		 * the elapsed cycles by it -- and it is never written directly,
+		 * only derived from the mode register's clock source. Restoring
+		 * it raw allows a zero, which is a trap on x86 the moment the
+		 * counters next tick. Derive it again from the mode that came
+		 * back with it, exactly as rcntWmode does. */
+		for (i = 0; i < 4; i++)
+		{
+			switch (counters[i].mode.ClockSource)
+			{
+				case 0:  counters[i].rate = 2; break;
+				case 1:  counters[i].rate = 32; break;
+				case 2:  counters[i].rate = 512; break;
+				default: counters[i].rate = vSyncInfo.hBlank + vSyncInfo.hRender; break;
+			}
+			if (!counters[i].rate)
+				counters[i].rate = 2;
+		}
+	}
+
+	return SaveState_IsOkay(s);
 }

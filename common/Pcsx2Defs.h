@@ -30,12 +30,19 @@
 #endif
 
 #include "Pcsx2Types.h"
+#ifdef __cplusplus
 #include <cstddef>
 #include <cassert>
+#else
+#include <stddef.h>
+#include <assert.h>
+#endif
 
+#ifdef __cplusplus
 // The C++ standard doesn't allow `offsetof` to be used on non-constant values (e.g. `offsetof(class, field[i])`)
 // Use this in those situations
 #define OFFSETOF(a, b) (reinterpret_cast<size_t>(&(static_cast<a*>(0)->b)))
+#endif
 
 // Coarse CPU family selector used to pick SIMD backends (SSE vs NEON), e.g. the
 // GSVector implementation. Mirrors the scheme used by the modern PCSX2/ARMSX2
@@ -73,6 +80,27 @@
 // and x86 platforms, since computing the
 // address on ARM64 is a single instruction (adrp).
 #define __pagealignsize 0x1000
+
+/* A compile-time check both languages can make: C89 has no static_assert,
+ * so the C side declares an array whose size goes negative when the
+ * condition fails. */
+#ifdef __cplusplus
+#define PCSX2_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#else
+#define PCSX2_SA_CAT_(a, b) a##b
+#define PCSX2_SA_CAT(a, b)  PCSX2_SA_CAT_(a, b)
+#define PCSX2_STATIC_ASSERT(cond, msg) \
+	typedef char PCSX2_SA_CAT(pcsx2_static_assert_, __LINE__)[(cond) ? 1 : -1]
+#endif
+
+/* alignas is C++11 and C11; these headers are also read by C sources. */
+#if defined(_MSC_VER)
+#define PCSX2_ALIGN(n) __declspec(align(n))
+#elif defined(__GNUC__)
+#define PCSX2_ALIGN(n) __attribute__((aligned(n)))
+#else
+#define PCSX2_ALIGN(n)
+#endif
 
 // --------------------------------------------------------------------------------------
 //  Microsoft Visual Studio
@@ -185,6 +213,17 @@
 // On every other toolchain they keep their historical meaning of
 // `__forceinline`, preserving the inlining and the perf characteristics
 // that working PCSX2 builds depend on.
+//
+// Note the absence of an `inline` keyword beside always_inline, and keep it
+// absent.  GCC wants the two together and says so -- `'always_inline'
+// function might not be inlinable` on every __fi function once NDEBUG is
+// set -- but it inlines them anyway at -O2 and above, so the attribute buys
+// the diagnostic and nothing else.  Adding `inline` would cost: __fi sits
+// on 385 definitions that are not static, among them cross-TU entry points
+// like dmacRead32 and COP0_UpdatePCCR, and an inline function defined in
+// one TU is not there to link against from another.  That is the same
+// undefined-reference failure the gnu_inline paragraph above describes,
+// reached by a different route.
 #ifdef NDEBUG
 #ifndef __forceinline
 #define __forceinline __attribute__((always_inline, unused))
@@ -330,6 +369,39 @@
 	#define CONSTINIT
 #endif
 
+/* 'inline' is not a C89 keyword; both compilers spell it with underscores. */
+#if defined(_MSC_VER)
+#define PCSX2_INLINE __inline
+#elif defined(__GNUC__)
+#define PCSX2_INLINE __inline__
+#else
+#define PCSX2_INLINE
+#endif
+
+/* min/max/clamp without <algorithm>.
+ *
+ * These are inline functions rather than macros on purpose: a macro
+ * evaluates its arguments twice, and of the 523 call sites in this tree, 73
+ * pass a function call or an increment -- std::max(Get_vuCycles(), 4u),
+ * std::max(16, cpuGetCycles()) and so on. A macro would call those twice and
+ * the bug would be invisible at the call site. The overload set covers the
+ * types actually used; anything else is a compile error rather than a silent
+ * conversion.
+ */
+#define PCSX2_DEFINE_MINMAX(suffix, type)                                     \
+	static PCSX2_INLINE type pcsx2_min_##suffix(type a, type b) { return (a < b) ? a : b; } \
+	static PCSX2_INLINE type pcsx2_max_##suffix(type a, type b) { return (a > b) ? a : b; } \
+	static PCSX2_INLINE type pcsx2_clamp_##suffix(type v, type lo, type hi)         \
+	{ return (v < lo) ? lo : ((v > hi) ? hi : v); }
+
+PCSX2_DEFINE_MINMAX(i,   int)
+PCSX2_DEFINE_MINMAX(u,   unsigned int)
+PCSX2_DEFINE_MINMAX(s64, s64)
+PCSX2_DEFINE_MINMAX(u64, u64)
+PCSX2_DEFINE_MINMAX(sz,  size_t)
+PCSX2_DEFINE_MINMAX(f,   float)
+PCSX2_DEFINE_MINMAX(d,   double)
+
 #ifdef __cplusplus
 
 // --------------------------------------------------------------------------------------
@@ -424,29 +496,6 @@ static inline void pcsx2_path_join(char* out, size_t out_size,
 	}
 }
 
-/* min/max/clamp without <algorithm>.
- *
- * These are inline functions rather than macros on purpose: a macro
- * evaluates its arguments twice, and of the 523 call sites in this tree, 73
- * pass a function call or an increment -- std::max(Get_vuCycles(), 4u),
- * std::max(16, cpuGetCycles()) and so on. A macro would call those twice and
- * the bug would be invisible at the call site. The overload set covers the
- * types actually used; anything else is a compile error rather than a silent
- * conversion.
- */
-#define PCSX2_DEFINE_MINMAX(suffix, type)                                     \
-	static inline type pcsx2_min_##suffix(type a, type b) { return (a < b) ? a : b; } \
-	static inline type pcsx2_max_##suffix(type a, type b) { return (a > b) ? a : b; } \
-	static inline type pcsx2_clamp_##suffix(type v, type lo, type hi)         \
-	{ return (v < lo) ? lo : ((v > hi) ? hi : v); }
-
-PCSX2_DEFINE_MINMAX(i,   int)
-PCSX2_DEFINE_MINMAX(u,   unsigned int)
-PCSX2_DEFINE_MINMAX(s64, s64)
-PCSX2_DEFINE_MINMAX(u64, u64)
-PCSX2_DEFINE_MINMAX(sz,  size_t)
-PCSX2_DEFINE_MINMAX(f,   float)
-PCSX2_DEFINE_MINMAX(d,   double)
 
 #define ImplementEnumOperators(enumName) \
 	static __fi enumName& operator++(enumName& src) \
@@ -486,10 +535,12 @@ PCSX2_DEFINE_MINMAX(d,   double)
 \
 	extern const char* EnumToString(enumName id)
 
+#ifdef __cplusplus
 class pxEnumEnd_t
 {
 };
 static const pxEnumEnd_t pxEnumEnd = {};
+#endif
 
 // --------------------------------------------------------------------------------------
 //  DeclareNoncopyableObject
@@ -510,6 +561,9 @@ public: \
 // --------------------------------------------------------------------------------------
 //  Handy Human-readable constants for common immediate values (_16kb -> _4gb)
 
+/* C++ keeps the typed constants it always had; C gets macros of the same
+ * values, since the SPU2 sources are built as C. */
+#ifdef __cplusplus
 static constexpr sptr _1kb = 1024 * 1;
 static constexpr sptr _4kb = _1kb * 4;
 static constexpr sptr _16kb = _1kb * 16;
@@ -526,6 +580,24 @@ static constexpr s64 _64mb = _1mb * 64;
 static constexpr s64 _256mb = _1mb * 256;
 static constexpr s64 _1gb = _1mb * 1024;
 static constexpr s64 _4gb = _1gb * 4;
+#else
+#define _1kb   (1024 * 1)
+#define _4kb   (_1kb * 4)
+#define _16kb  (_1kb * 16)
+#define _32kb  (_1kb * 32)
+#define _64kb  (_1kb * 64)
+#define _128kb (_1kb * 128)
+#define _256kb (_1kb * 256)
+
+#define _1mb   (1024 * 1024)
+#define _8mb   (_1mb * 8)
+#define _16mb  (_1mb * 16)
+#define _32mb  (_1mb * 32)
+#define _64mb  (_1mb * 64)
+#define _256mb (_1mb * 256)
+#define _1gb   ((s64)_1mb * 1024)
+#define _4gb   (_1gb * 4)
+#endif
 
 // Disable some spammy warnings which wx appeared to disable.
 // We probably should fix these at some point.

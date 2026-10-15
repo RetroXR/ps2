@@ -241,7 +241,7 @@ void VMManager::Internal::UpdateEmuFolders()
 void VMManager::Internal::CPUThreadInitialize(void)
 {
 	GSinit();
-	SPU2::Initialize();
+	SPU2_Initialize();
 	USBinit();
 
 	s_vm_memory = std::make_unique<SysMainMemory>();
@@ -279,7 +279,7 @@ void VMManager::Internal::CPUThreadShutdown(void)
 #endif
 
 	USBshutdown();
-	SPU2::Shutdown();
+	SPU2_Shutdown();
 	GSshutdown();
 }
 
@@ -293,16 +293,16 @@ extern std::string libretro_content;
 
 void VMManager::LoadSettings()
 {
-	/* The options set the fields the options set, and nothing else. What
-	 * LoadSave used to do was write only the entries the settings map
-	 * held, which left the runtime state -- UseBOOT2Injection, the IRX and
-	 * game-argument strings, the memory card types -- exactly as the
-	 * caller had it. Assigning the option config over EmuConfig discarded
-	 * all of that, including the CopyRuntimeConfig that ApplySettings does
-	 * immediately before calling here: fast boot came back as the default
-	 * on every settings change, which took the region and the refresh rate
-	 * with it, and the memory card types went back to File. */
-	Pcsx2Config runtime(std::move(EmuConfig));
+	/* The options set the fields the options set, and nothing else: the
+	 * runtime state -- UseBOOT2Injection, the IRX and game-argument
+	 * strings, the memory card types, fast boot -- is carried over from
+	 * the config as the caller had it.
+	 *
+	 * Kept rather than on the stack: a Pcsx2Config is 25 KB. Only one
+	 * thread applies settings at a time - the EE is paused, or it is the
+	 * EE booting. Moved from, as EmuConfig is assigned afresh next. */
+	static Pcsx2Config runtime;
+	runtime = std::move(EmuConfig);
 	EmuConfig = Host::OptionConfig();
 	EmuConfig.CopyRuntimeConfig(runtime);
 	EmuConfig.ApplyOptionFixups();
@@ -312,12 +312,11 @@ void VMManager::LoadSettings()
 		EmuConfig.Mcd[1].Enabled = false;
 	}
 	PAD::LoadConfig();
-	/* Everything below was the tail of the old LoadSettings and went with
-	 * the settings map by mistake. The hack masks drop user hacks a global
-	 * switch has since disabled, so a stale value cannot outlive it; the
-	 * interlace line is what a no-interlacing patch needs to take effect;
-	 * and ApplyGameFixes is the game database's, without which a game that
-	 * needs one renders wrongly -- which is what this cost Sega Rally. */
+	/* The hack masks drop user hacks a global switch has disabled, so a
+	 * stale value cannot outlive it; the interlace line is what a
+	 * no-interlacing patch needs to take effect; and ApplyGameFixes is the
+	 * game database's, without which a game that needs one renders
+	 * wrongly. */
 	EmuConfig.GS.MaskUserHacks();
 	EmuConfig.GS.MaskUpscalingHacks();
 	if (s_active_no_interlacing_patches > 0 && EmuConfig.GS.InterlaceMode == GSInterlaceMode::Automatic)
@@ -684,11 +683,11 @@ bool VMManager::Initialize(VMBootParameters boot_params)
 		return false;
 	}
 
-	SPU2::Open();
+	SPU2_Open();
 
 	if (PADinit() != 0 || PADopen() != 0)
 	{
-		SPU2::Close();
+		SPU2_Close();
 		DoCDVDclose();
 		CDVDsys_ClearFiles();
 		FileMcd_EmuClose();
@@ -701,7 +700,7 @@ bool VMManager::Initialize(VMBootParameters boot_params)
 	{
 		PADclose();
 		PADshutdown();
-		SPU2::Close();
+		SPU2_Close();
 		DoCDVDclose();
 		CDVDsys_ClearFiles();
 		FileMcd_EmuClose();
@@ -716,7 +715,7 @@ bool VMManager::Initialize(VMBootParameters boot_params)
 		DEV9shutdown();
 		PADclose();
 		PADshutdown();
-		SPU2::Close();
+		SPU2_Close();
 		DoCDVDclose();
 		CDVDsys_ClearFiles();
 		FileMcd_EmuClose();
@@ -797,7 +796,7 @@ void VMManager::Shutdown()
 	R3000A::ioman::reset();
 	vtlb_Shutdown();
 	USBclose();
-	SPU2::Close();
+	SPU2_Close();
 	PADclose();
 	DEV9close();
 
@@ -1230,11 +1229,11 @@ void VMManager::ApplySettings()
 		MTGS::WaitGS(false);
 	}
 
-	// Reset to a clean Pcsx2Config. Otherwise things which are optional (e.g. gamefixes)
-	// do not use the correct default values when loading.
-	Pcsx2Config old_config(std::move(EmuConfig));
-	EmuConfig = Pcsx2Config();
-	EmuConfig.CopyRuntimeConfig(old_config);
+	/* LoadSettings builds the config afresh from the options and the
+	 * runtime fields, so nothing optional keeps a stale value; the old one
+	 * is kept to compare against, off the stack (see LoadSettings). */
+	static Pcsx2Config old_config;
+	old_config = EmuConfig;
 	LoadSettings();
 	CheckForConfigChanges(old_config);
 }
@@ -1336,7 +1335,7 @@ static void SetMTVUAndAffinityControlDefault(Pcsx2Config& c)
 	// were interpreter-provider problems, and microVU1 is now the only VU1
 	// provider.
 	const bool mtvu = VMManager::MtvuHardwareAllowed() && VMManager::g_MtvuMenuDefault;
-	log_cb(RETRO_LOG_INFO, "%s\n", mtvu ? "  MTVU enabled (pcsx2_mtvu; requires >= 3 hardware threads)."
+	log_cb(RETRO_LOG_INFO, "%s\n", mtvu ? "  MTVU enabled (pcsx2_mtvu; requires >= 3 physical cores)."
 	                     : "  MTVU disabled.");
 	c.Speedhacks.vuThread = mtvu;
 	// Instant VU1 assumes the VU1 provider finishes a program quickly (x86
@@ -1361,13 +1360,16 @@ static void SetMTVUAndAffinityControlDefault(Pcsx2Config& c) { (void)c; }
 #endif
 
 /* Single source of truth for the MTVU hardware gate.  The worker is only
- * worth spawning (and only spawned) with >= 3 hardware threads; every
- * writer of EmuCore/Speedhacks vuThread must apply this same predicate,
- * otherwise THREAD_VU1 can come up true with no worker alive and
- * MTGS::MainLoop waits on a handoff that never arrives (boot hang). */
+ * worth spawning (and only spawned) with >= 3 physical cores - EE, VU
+ * and GS each want a core of their own, and two SMT threads on one core
+ * are not that (a 2-core/4-thread part used to pass on its thread count
+ * and put the three on two cores); every writer of EmuCore/Speedhacks
+ * vuThread must apply this same predicate, otherwise THREAD_VU1 can come
+ * up true with no worker alive and MTGS::MainLoop waits on a handoff
+ * that never arrives (boot hang). */
 bool VMManager::MtvuHardwareAllowed()
 {
-	return cpu_features_get_core_amount() >= 3;
+	return cpu_features_get_core_amount_physical() >= 3;
 }
 
 void VMManager::EnsureCPUInfoInitialized()
