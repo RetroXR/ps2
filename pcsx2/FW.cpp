@@ -1363,6 +1363,23 @@ void FWopen(void)
 		fw_schedule();
 }
 
+/* A console that has joined the cable meets it from then on, whether or not
+ * its game ever starts an i.LINK driver.
+ *
+ * The frontend holds every other console on the wire at the moment a newcomer
+ * joined until the newcomer first says where it stands, and this console says
+ * so only from the cable event. FWopen arms that event, and then the boot's
+ * psxReset wipes psxRegs, every pending IOP event with it, so nothing armed it
+ * again until the game's driver first wrote a controller register. Time
+ * Crisis II does that about 19 s after power-on: a console already playing
+ * sat parked at 10 fps all that time, and one whose partner never starts a
+ * driver at all (the BIOS browser, a game without i.LINK) stayed parked. */
+void FWiopReset(void)
+{
+	if (cable.attached)
+		fw_schedule();
+}
+
 void FWclose(void)
 {
 	/* Debug: LRPS2_IOP_DUMP=<path> writes IOP RAM out as the machine stops,

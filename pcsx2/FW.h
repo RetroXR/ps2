@@ -32,6 +32,9 @@ void FWwrite8(u32 addr, u8 value);
 
 /* The IOP event that paces the controller and the cable. */
 void fwInterrupt(void);
+/* The IOP has been reset, and every pending IOP event with it: a console on a
+ * cable goes on meeting it whatever its game is doing. */
+void FWiopReset(void);
 
 struct retro_link_interface;
 /* Join the frontend's link bus, which is the i.LINK cable. Safe whether or
