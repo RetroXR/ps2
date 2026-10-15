@@ -417,6 +417,9 @@ These work on every architecture:
 |---|---|
 | `LRPS2_ILINK_LOG=1` | i.LINK bus resets, self-IDs and every packet sent and received, as quadlets |
 | `LRPS2_FW_LOG=1` | Every i.LINK controller register access, with the IOP pc (implies `LRPS2_ILINK_LOG`) |
+| `LRPS2_ILINK_AHEAD_US=<us>` | i.LINK promise for an experiment, in microseconds (default 500; the stretch is half of it): cabled consoles may drift further apart before one waits, and every packet crosses that much later |
+| `LRPS2_ILINK_ALIGN=0` | Measure and log where a cabled console's frames fall on the cable's clock without lining them up with the other consoles' (the control leg) |
+| `LRPS2_ILINK_PHASE=1` | Every 600 frames, where a cabled console's frames fall against its anchor on the cable |
 | `LRPS2_IOP_STDOUT=1` / `LRPS2_EE_STDOUT=1` | Log the IOP's stdout and `Kprintf`, and the EE's SIO console, which are otherwise discarded |
 | `LRPS2_IOP_POKE=addr=val[,...]` | Write IOP words (hex) on every i.LINK register access -- how a driver's own debug switches get turned on |
 | `LRPS2_IOP_PCHOOK=addr=name[,...]` | Log a0-a3, ra and the first eight words at a1 each time the IOP reaches those addresses (needs the IOP interpreter, `LRPS2_NO_IOPREC=1`) |

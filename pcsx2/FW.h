@@ -35,6 +35,9 @@ void fwInterrupt(void);
 /* The IOP has been reset, and every pending IOP event with it: a console on a
  * cable goes on meeting it whatever its game is doing. */
 void FWiopReset(void);
+/* A vsync: where this console's frame falls on the cable's clock, and the
+ * skip that lines it up with the other consoles'. */
+void FWvsync(void);
 
 struct retro_link_interface;
 /* Join the frontend's link bus, which is the i.LINK cable. Safe whether or

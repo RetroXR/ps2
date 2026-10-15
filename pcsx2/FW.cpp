@@ -220,6 +220,12 @@ static void il_dump(const char* what, const u32* q, unsigned n, u64 tick)
 #define FW_GRAIN_LINKED   (FW_AHEAD_LINKED / 2)
 /* With nobody on the bus the only thing to learn is that somebody arrived. */
 #define FW_GRAIN_ALONE    (FW_IOP_HZ / 60)
+/* The two in force, in IOP ticks. LRPS2_ILINK_AHEAD_US=<microseconds> sets the
+ * promise for an experiment (the stretch stays half of it), read when the cable
+ * is attached: a wider promise lets cabled consoles drift further apart before
+ * one waits, and every packet crosses that much later. */
+static u64 fw_ahead_linked = FW_AHEAD_LINKED;
+static u64 fw_grain_linked = FW_GRAIN_LINKED;
 
 /* The 1394 cycle timer runs at 24.576 MHz, two thirds of the IOP clock. */
 #define CYC_OFFSETS       3072u
@@ -373,8 +379,24 @@ static struct
 	bool peer_heard[64];
 	bool announced;
 
+	/* Lining this console's frames up with the others' (FWvsync): where the
+	 * bus last anchored this console, whether a frame still has to be lined
+	 * up to that anchor, the skip that does it, and the frame as measured. */
+	bool anchored;
+	bool align;
+	u64 anchor;
+	u64 skip;
+	u64 last_vsync;
+	u64 period;
+	u64 frames;
+
 	u64 sent, received;
 } cable;
+
+/* LRPS2_ILINK_ALIGN=0 measures and logs a console's frame on the cable without
+ * moving it: the control leg for FWvsync. Read when the cable is attached. */
+static bool fw_align = true;
+static bool fw_phase_log = false;
 
 /* ---- clock ---- */
 
@@ -1099,9 +1121,31 @@ static struct
 	bool done;         /* the helper's answer is waiting for the EE  */
 	bool pending;      /* a request is out and not yet collected     */
 	u64 now, safe, request, grain;
+	u64 skip;          /* the skip this request carries (FWvsync)    */
 	uint64_t grant;
 	uint32_t wake;
 } rv;
+
+/* The controller's clock jumps `d` ticks on, and everything this console keeps
+ * for itself goes with it -- the cycle timer, the cycle-second, its own
+ * transmit, self-ID and split timeouts -- so the game sees no step at all.
+ * What came from the cable stays where the cable put it. The one thing that
+ * moves is where this console's frames fall on the cable's clock. */
+static void fw_skip(u64 d)
+{
+	const u64 before = fw_clock();
+	unsigned i;
+	fw.now = before + d;
+	fw.cyc_base += (s64)(before * 2 / 3) - (s64)(fw.now * 2 / 3);
+	if (fw.next_second != (u64)-1)
+		fw.next_second += d;
+	for (i = 0; i < fw.nev; i++)
+		if (fw.ev[i].type == EV_SELF_ID || fw.ev[i].type == EV_TX_DONE ||
+		    fw.ev[i].type == EV_PHT_TIMEOUT)
+			fw.ev[i].tick += d;
+	if (cable.last_vsync)
+		cable.last_vsync += d;
+}
 
 static void rv_thread(void*)
 {
@@ -1140,20 +1184,24 @@ static bool cable_rendezvous(void)
 	if (!rv.pending)
 	{
 		u64 now = fw_clock();
-		u64 grain = cable.peers >= 2 ? FW_GRAIN_LINKED : FW_GRAIN_ALONE;
-		u64 ahead = cable.peers >= 2 ? FW_AHEAD_LINKED : FW_GRAIN_ALONE;
+		u64 grain = cable.peers >= 2 ? fw_grain_linked : FW_GRAIN_ALONE;
+		u64 ahead = cable.peers >= 2 ? fw_ahead_linked : FW_GRAIN_ALONE;
+		/* A skip (FWvsync) is asked for as part of the stretch: the console
+		 * may only pass ticks the cable has granted it. */
+		u64 skip = cable.peers >= 2 ? cable.skip : 0;
 
 		/* Published before anything is read: a peer parked on this
 		 * console's horizon cannot move until it has been told the horizon
 		 * moved. The horizon reaches further than the stretch asked for
 		 * below; see FW_GRAIN_LINKED. */
-		if (now + ahead > cable.safe)
-			cable.safe = now + ahead;
+		if (now + skip + ahead > cable.safe)
+			cable.safe = now + skip + ahead;
 		slock_lock(rv.lock);
 		rv.now = now;
 		rv.safe = cable.safe;
-		rv.request = now + grain;
+		rv.request = now + skip + grain;
 		rv.grain = grain;
+		rv.skip = skip;
 		rv.done = false;
 		rv.posted = true;
 		scond_broadcast(rv.cond);
@@ -1176,8 +1224,32 @@ static bool cable_rendezvous(void)
 	rv.done = false;
 	slock_unlock(rv.lock);
 	rv.pending = false;
+	if (rv.skip)
+	{
+		fw_skip(rv.skip);
+		cable.skip = 0;
+	}
 
-	cable_refresh_peers();
+	{
+		/* The bus re-anchors a console at the first call it makes after the
+		 * wire changed, and the peer count changes with it: when a console
+		 * joins a live wire everybody on it is re-anchored, and only the
+		 * newcomer is told TOPOLOGY. So a changed count or a TOPOLOGY wake
+		 * means this call is where the bus now measures this console from.
+		 * Getting it wrong by a stretch costs a little alignment, nothing
+		 * else. */
+		const unsigned before = cable.peers;
+		cable_refresh_peers();
+		if (cable.peers < 2)
+			cable.anchored = false;
+		else if (!cable.anchored || cable.peers != before || (rv.wake & RETRO_LINK_WAKE_TOPOLOGY))
+		{
+			cable.anchored = true;
+			cable.anchor = rv.now;
+			cable.align = true;
+			cable.skip = 0;
+		}
+	}
 	if (cable.peers >= 2)
 	{
 		/* Keep saying where this link layer stands until every other console
@@ -1192,7 +1264,7 @@ static bool cable_rendezvous(void)
 			cable_announce();
 	}
 	cable_drain();
-	cable.next_rv = rv.now + rv.grain;
+	cable.next_rv = rv.now + rv.skip + rv.grain;
 	return true;
 }
 
@@ -1378,6 +1450,52 @@ void FWiopReset(void)
 {
 	if (cable.attached)
 		fw_schedule();
+}
+
+/* Cabled consoles start their frames at the same moment of the cable's clock.
+ *
+ * They may drift only a stretch apart (FW_GRAIN_LINKED) before one waits, and
+ * a PS2 does a frame's work in a burst: the game runs its frame after vsync
+ * and spins out the rest, and the spin costs the host almost nothing. Two
+ * consoles switched on at different moments have their vsyncs anywhere
+ * against each other, so one's burst lands while the other is spinning, the
+ * spinner runs to the edge of the stretch and waits, and then the other way
+ * round: the bursts take turns. Time Crisis II's second area does about 15 ms
+ * of work a frame on each, and taking turns that is 30 ms a frame -- both at
+ * 36 fps with a third of every second parked, where either alone keeps up.
+ * Widening the stretch to 4 ms brought them to 53 fps and proved the cause,
+ * but every packet then crosses 8 ms late.
+ *
+ * So after every anchor (cable_rendezvous) the console measures where its
+ * next frame starts against the anchor and skips the controller's clock on
+ * by the rest of a frame (fw_skip): its vsyncs then fall on whole frames from
+ * the anchor, the other consoles' do too, and the anchors mean the same
+ * instant. The skip is at most a frame, once per cable change, and is
+ * granted like any other stretch. */
+void FWvsync(void)
+{
+	u64 now, phase;
+	if (!cable.attached)
+		return;
+	now = fw_clock();
+	if (cable.last_vsync && now > cable.last_vsync)
+		cable.period = now - cable.last_vsync;
+	cable.last_vsync = now;
+	/* LRPS2_ILINK_PHASE=1: every 600 frames, where they fall against the
+	 * anchor, which is how a line-up is checked across consoles. */
+	if (fw_phase_log && cable.anchored && cable.period && ++cable.frames % 600 == 0 && log_cb)
+		log_cb(RETRO_LOG_WARN, "i.LINK: frame %llu at %llu of %llu from the anchor\n",
+			(unsigned long long)cable.frames, (unsigned long long)((now - cable.anchor) % cable.period),
+			(unsigned long long)cable.period);
+	if (!cable.align || !cable.period || cable.peers < 2 || now < cable.anchor)
+		return;
+	cable.align = false;
+	phase = (now - cable.anchor) % cable.period;
+	cable.skip = fw_align && phase ? cable.period - phase : 0;
+	if (log_cb)
+		log_cb(RETRO_LOG_WARN, "i.LINK: frames start %llu ticks into the cable's %llu; %s\n",
+			(unsigned long long)phase, (unsigned long long)cable.period,
+			!phase ? "already lined up" : fw_align ? "skipping the rest" : "left there (LRPS2_ILINK_ALIGN=0)");
 }
 
 void FWclose(void)
@@ -1641,6 +1759,18 @@ void FWlinkAttach(const struct retro_link_interface* link, unsigned port)
 {
 	if (cable.attached || !link)
 		return;
+	{
+		const char* us = getenv("LRPS2_ILINK_AHEAD_US");
+		const long v = us ? strtol(us, NULL, 10) : 0;
+		fw_ahead_linked = v > 0 ? (u64)FW_IOP_HZ * (u64)v / 1000000u : FW_AHEAD_LINKED;
+		fw_grain_linked = fw_ahead_linked / 2;
+		if (v > 0 && log_cb)
+			log_cb(RETRO_LOG_WARN, "i.LINK: promise %ld us, stretch %ld us (LRPS2_ILINK_AHEAD_US)\n", v, v / 2);
+		us = getenv("LRPS2_ILINK_ALIGN");
+		fw_align = !(us && us[0] == '0');
+		us = getenv("LRPS2_ILINK_PHASE");
+		fw_phase_log = us && us[0] == '1';
+	}
 	cable.handle = link->attach(port, FW_PROTOCOL, FW_IOP_HZ);
 	if (!cable.handle)
 	{
@@ -1664,6 +1794,8 @@ void FWlinkAttach(const struct retro_link_interface* link, unsigned port)
 	cable.last_stamp = 0;
 	cable.announced = false;
 	memset(cable.peer_heard, 0, sizeof(cable.peer_heard));
+	cable.anchored = cable.align = false;
+	cable.anchor = cable.skip = cable.last_vsync = cable.period = cable.frames = 0;
 	if (log_cb)
 		log_cb(RETRO_LOG_INFO, "i.LINK: cable attached to port %u\n", port);
 }
