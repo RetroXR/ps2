@@ -741,7 +741,7 @@ void hwWrite8(u32 mem, u8 value)
 			if (s_ee_stdout < 0)
 				s_ee_stdout = getenv("LRPS2_EE_STDOUT") != NULL;
 			if (s_ee_stdout && log_cb)
-				log_cb(RETRO_LOG_INFO, "[EE] %s", sio_buffer);
+				log_cb(RETRO_LOG_WARN, "[EE] %s", sio_buffer);
 			sio_count               = 0;
 		}
 		return;

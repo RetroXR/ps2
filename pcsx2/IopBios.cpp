@@ -1078,7 +1078,7 @@ namespace R3000A
 					for (u32 i = 0; i < n; i++)
 						s[i] = (char)iopMemRead8(data + i);
 					s[n] = 0;
-					log_cb(RETRO_LOG_INFO, "[IOP] %s", s);
+					log_cb(RETRO_LOG_WARN, "[IOP] %s", s);
 				}
 				pc = ra;
 				v0 = a2;
@@ -1171,7 +1171,7 @@ namespace R3000A
 						o = sizeof(out) - 1;
 				}
 				out[o] = 0;
-				log_cb(RETRO_LOG_INFO, "[IOP] %s", out);
+				log_cb(RETRO_LOG_WARN, "[IOP] %s", out);
 			}
 			pc = ra;
 
