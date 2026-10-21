@@ -77,6 +77,44 @@ Two consoles usually share one NVRAM and so one i.LINK ID, which is the EUI-64
 the socket layer addresses peers by; a console on a cable salts it with the
 handle the frontend gave it.
 
+## Ethernet (network adapter) LAN play
+
+Consoles running in the same frontend can be cabled to one Ethernet hub. The
+network adapter's socket is the frontend's link bus
+(`RETRO_ENVIRONMENT_GET_LINK_INTERFACE`, protocol `ethernet-1`, link port 1, on
+the IOP's 36.864 MHz): one message is one Ethernet II frame exactly as it is on
+the wire, destination MAC first, without preamble or FCS, and every frame goes
+to every other console on the bus, as a hub repeats it. Dolphin's broadband
+adapter speaks the same protocol, so a GameCube and a PS2 can share a hub. Set
+`pcsx2_dev9_eth` to `link` ("Cable"); it is read at load, and without the link
+interface the adapter is a socket with nothing plugged in.
+
+Verified with Gran Turismo 4 (USA) Multi-LAN Race, two consoles: both create a
+network configuration with "Use DHCP: Yes", one is set to Host (Options > LAN
+Settings, reached from a race menu's Option icon) with No. of Players 2, the
+other consoles press Connect first and the host last; both reach the shared
+Course Select, Car Select and the grid, and race with P1/P2 live on both screens
+and identical race clocks. GT4 keeps LAN Settings only for the session.
+
+Each console has an address of its own. Every console reads the same EEPROM
+default MAC, so a console on a cable takes a Sony-OUI MAC derived from the
+handle the frontend gave it, and DHCP is answered inside the console (the
+internal server, never on the cable) with `10.x.y.z/8`, `x.y.z` the tail of that
+MAC, gateway `10.0.0.1`. No two consoles answer each other's DHCP, and a game
+set to configure itself gets an address at once.
+
+Frames are stamped on the cable's clock and handed to the SMAP when the console
+reaches that tick, polled from `smap_async`, so what a game hears depends on
+emulated time alone. The pacing is the i.LINK cable's (a helper thread calls
+`advance()`, a pause is never held up by it, frames line up across consoles) with
+a one-millisecond promise. A console whose renderer dies stops publishing, and
+everything on its cable waits for it -- deliberately: there is no timeout, so a
+cabled machine can only be released by pulling its cable.
+
+Known issue, not the cable: on the hardware (Vulkan) GS, GT4's LAN Car Select
+faulted the GPU in both attempts (nvlddmkm "WIDTH CT Violation", device lost),
+so verify with `pcsx2_renderer = "Software (HW)"`.
+
 ## Status (arm64)
 
 Verified booting to real in-game content (Mega Man X7 gameplay, Gran Turismo 3
@@ -420,7 +458,12 @@ These work on every architecture:
 | `LRPS2_ILINK_AHEAD_US=<us>` | i.LINK promise for an experiment, in microseconds (default 500; the stretch is half of it): cabled consoles may drift further apart before one waits, and every packet crosses that much later |
 | `LRPS2_ILINK_ALIGN=0` | Measure and log where a cabled console's frames fall on the cable's clock without lining them up with the other consoles' (the control leg) |
 | `LRPS2_ILINK_PHASE=1` | Every 600 frames, where a cabled console's frames fall against its anchor on the cable |
-| `LRPS2_IOP_STDOUT=1` / `LRPS2_EE_STDOUT=1` | Log the IOP's stdout and `Kprintf`, and the EE's SIO console, which are otherwise discarded |
+| `LRPS2_ETH_LOG=1` | Every Ethernet frame put on or taken off the cable: tick, MACs, ethertype, length |
+| `LRPS2_ETH_PCAP=<path>` | Every Ethernet frame on the cable into `<path>.<MAC tail>.pcap`, one per console, stamped with the cable's clock |
+| `LRPS2_ETH_DIAG=1` | Where the Ethernet cable is, every 300 frames and whenever a rendezvous has waited longer than a second |
+| `LRPS2_ETH_AHEAD_US=<us>` | Ethernet promise for an experiment, in microseconds (default 1000; the stretch is half of it) |
+| `LRPS2_ETH_ALIGN=0` | Do not line a cabled console's frames up with the others' on the Ethernet cable |
+| `LRPS2_IOP_STDOUT=1` / `LRPS2_EE_STDOUT=1` | Log the IOP's stdout and `Kprintf`, and the EE's SIO console, which are otherwise discarded; at WARN, so a frontend that drops lower levels still shows them |
 | `LRPS2_IOP_POKE=addr=val[,...]` | Write IOP words (hex) on every i.LINK register access -- how a driver's own debug switches get turned on |
 | `LRPS2_IOP_PCHOOK=addr=name[,...]` | Log a0-a3, ra and the first eight words at a1 each time the IOP reaches those addresses (needs the IOP interpreter, `LRPS2_NO_IOPREC=1`) |
 | `LRPS2_IOP_DUMP=<path>` | Write IOP RAM out as the machine stops (`<path>.<bus index>` on a cable) |

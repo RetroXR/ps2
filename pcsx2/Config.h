@@ -595,6 +595,8 @@ struct Pcsx2Config
 			PCAP_Switched = 2,
 			TAP = 3,
 			Sockets = 4,
+			/* The frontend's link bus, cabled to other consoles (link_eth.h). */
+			Link = 5,
 		};
 		static const char* NetApiNames[];
 

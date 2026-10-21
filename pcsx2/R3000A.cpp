@@ -18,6 +18,7 @@
 
 #include "R3000A.h"
 #include "FW.h"
+#include "DEV9/link_eth.h"
 #include "Common.h"
 
 #include "Sio.h"
@@ -182,7 +183,7 @@ static __fi void _psxTestInterrupts(void)
 
 	if( psxRegs.interrupt & ((1 << IopEvt_Cdvd) | (1 << IopEvt_Dma11) | (1 << IopEvt_Dma12)
 		| (1 << IopEvt_Cdrom) | (1 << IopEvt_CdromRead) | (1 << IopEvt_DEV9) | (1 << IopEvt_USB)
-		| (1 << IopEvt_FW)))
+		| (1 << IopEvt_FW) | (1 << IopEvt_ETH)))
 	{
 		IopTestEvent(IopEvt_Cdvd,		cdvdActionInterrupt);
 		IopTestEvent(IopEvt_Dma11,		psxDMA11Interrupt);	// SIO2
@@ -192,6 +193,7 @@ static __fi void _psxTestInterrupts(void)
 		IopTestEvent(IopEvt_DEV9,		dev9Interrupt);
 		IopTestEvent(IopEvt_USB,		usbInterrupt);
 		IopTestEvent(IopEvt_FW,		fwInterrupt);
+		IopTestEvent(IopEvt_ETH,	ethInterrupt);
 	}
 }
 

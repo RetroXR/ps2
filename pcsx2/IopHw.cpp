@@ -24,6 +24,7 @@
 #include "CDVD/Ps1CD.h"
 #include "CDVD/CDVD.h"
 #include "FW.h"
+#include "DEV9/link_eth.h"
 
 
 // NOTE: Any modifications to read/write fns should also go into their const counterparts
@@ -39,8 +40,9 @@ void psxHwReset(void) {
 	psxRcntInit();
 	sio0.FullReset();
 	sio2.FullReset();
-	/* Last: the cable's event goes back on the queue the reset just emptied. */
+	/* Last: the cables' events go back on the queue the reset just emptied. */
 	FWiopReset();
+	ETHiopReset();
 }
 
 __fi u8 psxHw4Read8(u32 add)

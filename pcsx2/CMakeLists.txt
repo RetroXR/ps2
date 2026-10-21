@@ -746,6 +746,7 @@ set(pcsx2DEV9Sources
 	DEV9/Sessions/UDP_Session/UDP_FixedPort.cpp
 	DEV9/Sessions/UDP_Session/UDP_Session.cpp
 	DEV9/flash.cpp
+	DEV9/link_eth.cpp
 	DEV9/net.cpp
 	DEV9/smap.cpp
 	DEV9/sockets.cpp

@@ -105,6 +105,10 @@ public:
 	NetAdapter();
 	virtual bool isInitialised() = 0;
 	virtual bool recv(NetPacket* pkt) = 0; //gets a packet from the host, on the RX thread
+	/* A packet that is due now, on the EE thread: for an adapter whose
+	 * packets arrive at a moment of emulated time rather than whenever the
+	 * host has them (the link cable). */
+	virtual bool recvDue(NetPacket* pkt) { return false; }
 	virtual bool send(NetPacket* pkt); //sends the packet and deletes it when done
 	virtual void reset(){};
 	virtual void reloadSettings() = 0;

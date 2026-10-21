@@ -246,12 +246,13 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "pcsx2_dev9_eth",
       "System > Ethernet (DEV9)",
       "Ethernet (DEV9)",
-      "Emulate the SPEED expansion's ethernet adapter through the Sockets backend: a userspace TCP/UDP stack with an internal DHCP server, needing no host network configuration or privileges.",
+      "Emulate the SPEED expansion's ethernet adapter. 'Sockets' reaches the host's network through a userspace TCP/UDP stack with an internal DHCP server, needing no host network configuration or privileges. 'Cable' plugs it into other consoles running in the same frontend instead, for LAN play such as Gran Turismo 4's LAN Battle: the frontend decides which consoles share a hub and must support the link interface, and DHCP is answered inside each console with an address of its own. Takes effect when content is loaded.",
       NULL,
       "system",
       {
          { "disabled", NULL },
-         { "enabled", NULL },
+         { "enabled", "Sockets" },
+         { "link", "Cable" },
          { NULL, NULL },
       },
       "disabled"

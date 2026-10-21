@@ -31,6 +31,7 @@
 #include "pcap_io.h"
 #endif
 #include "sockets.h"
+#include "link_adapter.h"
 
 #include "PacketReader/EthernetFrame.h"
 #include "PacketReader/IP/IP_Packet.h"
@@ -97,7 +98,7 @@ bool net_rx_deliver()
 		int size;
 		if (retro_spsc_peek(&s_rx_ring, &size, sizeof(size)) == sizeof(size))
 			retro_spsc_read(&s_rx_ring, &tmp, NET_RX_RECORD_BYTES(size));
-		else if (!nif->InternalServerRecv(&tmp))
+		else if (!nif->InternalServerRecv(&tmp) && !nif->recvDue(&tmp))
 			break;
 		delivered |= rx_process(&tmp);
 	}
@@ -140,6 +141,9 @@ NetAdapter* GetNetAdapter()
 #endif
 		case Pcsx2Config::DEV9Options::NetApi::Sockets:
 			na = static_cast<NetAdapter*>(new SocketAdapter());
+			break;
+		case Pcsx2Config::DEV9Options::NetApi::Link:
+			na = static_cast<NetAdapter*>(new LinkAdapter());
 			break;
 		default:
 			return 0;
