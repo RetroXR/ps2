@@ -96,6 +96,17 @@ other consoles press Connect first and the host last; both reach the shared
 Course Select, Car Select and the grid, and race with P1/P2 live on both screens
 and identical race clocks. GT4 keeps LAN Settings only for the session.
 
+And with six, GT4's most: No. of Players 6 on the host, five clients waiting,
+all six on one Course Select, Car Select and grid, P1 to P6 live and race clocks
+within 17 ms of each other, at about 31 fps in the race (six software GS in one
+process on a 10-core Ryzen AI 9; menus hold 60). A network configuration is tied
+to the console that made it: a memory card copied from another console has its
+configuration refused ("created on another console"), and the console has to
+delete it and make its own. Six copies of the core in one process need the
+code-cache hold in `Memory.cpp` (`NearHold`): without it the fourth to sixth
+could not place their memory in reach of their image and died on their first
+recompiled block.
+
 Each console has an address of its own. Every console reads the same EEPROM
 default MAC, so a console on a cable takes a Sony-OUI MAC derived from the
 handle the frontend gave it, and DHCP is answered inside the console (the
