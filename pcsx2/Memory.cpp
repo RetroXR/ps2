@@ -215,6 +215,53 @@ static bool HostRegionFree(uptr base, size_t size)
 	return true;
 }
 
+/* What holds the address space in reach of the image, when nothing in it was
+ * free: every allocation of 16 MB or more, by what it is (the module's file
+ * for an image), and the largest free gap. Which neighbour took the room is
+ * otherwise a guess. */
+static void LogReach(uptr lo, uptr hi)
+{
+	MEMORY_BASIC_INFORMATION mbi;
+	uptr p = lo;
+	uptr run_base = 0, run_size = 0, gap = 0;
+	DWORD run_type = 0;
+	auto flush = [&]() {
+		if (run_size >= 0x01000000)
+		{
+			char file[MAX_PATH] = "";
+			if (run_type == MEM_IMAGE)
+				GetModuleFileNameA((HMODULE)run_base, file, sizeof(file));
+			log_cb(RETRO_LOG_WARN, "  in reach: %p +%4llu MB %s %s\n", (void*)run_base,
+				(unsigned long long)(run_size >> 20),
+				run_type == MEM_IMAGE ? "image" : run_type == MEM_MAPPED ? "mapped" : "private", file);
+		}
+		run_size = 0;
+	};
+	while (p < hi && VirtualQuery((void*)p, &mbi, sizeof(mbi)))
+	{
+		const uptr next = (uptr)mbi.BaseAddress + mbi.RegionSize;
+		if (mbi.State == MEM_FREE)
+		{
+			flush();
+			gap = std::max<uptr>(gap, std::min(next, hi) - std::max<uptr>((uptr)mbi.BaseAddress, lo));
+		}
+		else if ((uptr)mbi.AllocationBase == run_base && run_size)
+			run_size = next - run_base;
+		else
+		{
+			flush();
+			run_base = (uptr)mbi.AllocationBase;
+			run_size = next - run_base;
+			run_type = mbi.Type;
+		}
+		if (next <= p)
+			break;
+		p = next;
+	}
+	flush();
+	log_cb(RETRO_LOG_WARN, "  in reach: largest free gap %llu MB\n", (unsigned long long)(gap >> 20));
+}
+
 static VirtualMemoryManagerPtr ReserveAt(const char* name, uptr base, size_t size)
 {
 	if (!HostRegionFree(base, size))
@@ -222,12 +269,94 @@ static VirtualMemoryManagerPtr ReserveAt(const char* name, uptr base, size_t siz
 	VirtualMemoryManagerPtr m = std::make_shared<VirtualMemoryManager>(name, base, size, /*upper_bounds=*/0, /*strict=*/true);
 	return m->IsOk() ? m : nullptr;
 }
+
+/* Room for the code cache and main memory, side by side next to this image,
+ * reserved the moment the copy is mapped -- a static constructor, so before
+ * retro_init or anything else in the process allocates.
+ *
+ * Several copies of the core in one process are not packed in the DLL region
+ * at the top of the address space: they land among the heaps, in the space
+ * Windows hands out bottom-up, and by the time a copy got to place its memory
+ * at load, the other consoles' heaps, mappings and main memory (which went
+ * 1.7 GB beyond its code cache, exactly where the next copy and the next
+ * heaps arrive) had filled everything in reach. Six PS2s, software or
+ * paraLLEl-GS, could not start: the fourth to sixth fell back to slots out of
+ * reach and died on the first recompiled block (STATUS_STACK_BUFFER_OVERRUN).
+ * Held here, the 625 MB is this copy's before anyone else can ask for it. */
+extern "C" IMAGE_DOS_HEADER __ImageBase;
+
+struct NearHold
+{
+	uptr base = 0;
+	uptr size = 0;
+	bool code_first = true; /* code cache at the low end (the hold is above the image) */
+
+	NearHold()
+	{
+		const IMAGE_DOS_HEADER* dos = &__ImageBase;
+		const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)((const u8*)dos + dos->e_lfanew);
+		const uptr image_start = (uptr)dos;
+		const uptr image_end = image_start + nt->OptionalHeader.SizeOfImage;
+		const uptr total = (uptr)HostMemoryMap::CodeSize + HostMemoryMap::MainSize;
+		const uptr code_size = HostMemoryMap::CodeSize;
+		const uptr reach = 0x7C000000;
+		const uptr step = 0x01000000;
+		const uptr above0 = (image_end + step - 1) & ~(step - 1);
+		const uptr below0 = image_start & ~(step - 1);
+		for (uptr d = 0; d + code_size < reach; d += step)
+		{
+			/* Above: code next to the image, main past it. */
+			if (above0 + d + code_size - image_start <= reach && Take(above0 + d, total))
+			{
+				code_first = true;
+				return;
+			}
+			/* Below: main lowest, code between it and the image. */
+			if (below0 >= total + d + step && image_end - (below0 - code_size - d) <= reach
+				&& Take(below0 - total - d, total))
+			{
+				code_first = false;
+				return;
+			}
+		}
+	}
+
+	bool Take(uptr at, uptr len)
+	{
+		if (!HostRegionFree(at, len) || VirtualAlloc((void*)at, len, MEM_RESERVE, PAGE_NOACCESS) != (void*)at)
+			return false;
+		base = at;
+		size = len;
+		return true;
+	}
+
+	/* Hand the range back so it can be reserved for real: where it was, or 0. */
+	uptr Release()
+	{
+		const uptr at = base;
+		if (at)
+			VirtualFree((void*)at, 0, MEM_RELEASE);
+		base = 0;
+		return at;
+	}
+
+	~NearHold()
+	{
+		if (base)
+			VirtualFree((void*)base, 0, MEM_RELEASE);
+	}
+};
+static NearHold s_near_hold;
 #endif
 
-/* Where main memory and the recompilers' code cache go. Generated code reaches
- * this image's data and functions, and main memory, with 32-bit
- * displacements, so the code cache has to be within 2 GB of both -- but main
- * memory only of the code cache: nothing in the image addresses it directly.
+/* Where main memory and the recompilers' code cache go: in the room NearHold
+ * kept for them at load when it got any, which is the usual case. Otherwise as
+ * below.
+ *
+ * Generated code reaches this image's data and functions, and main memory,
+ * with 32-bit displacements, so the code cache has to be within 2 GB of both
+ * -- but main memory only of the code cache: nothing in the image addresses it
+ * directly.
  *
  * The fixed slots AllocateVirtualMemory tries -- eleven 256 MB steps around
  * the image -- hold about four machines when several copies of the core share
@@ -247,6 +376,20 @@ static VirtualMemoryManagerPtr ReserveAt(const char* name, uptr base, size_t siz
 SysMainMemory::Placement SysMainMemory::PlaceMainAndCode()
 {
 #if defined(_WIN32)
+	/* The room held at load, if there was any. Released and taken again in
+	 * the same breath; should another thread have got in between, the search
+	 * below still runs. */
+	const bool code_first = s_near_hold.code_first;
+	if (const uptr at = s_near_hold.Release())
+	{
+		const uptr code = code_first ? at : at + HostMemoryMap::MainSize;
+		const uptr main = code_first ? at + HostMemoryMap::CodeSize : at;
+		VirtualMemoryManagerPtr code_mem = ReserveAt(nullptr, code, HostMemoryMap::CodeSize);
+		VirtualMemoryManagerPtr main_mem = code_mem ? ReserveAt("pcsx2", main, HostMemoryMap::MainSize) : nullptr;
+		if (code_mem && main_mem)
+			return Placement(main_mem, code_mem);
+	}
+
 	HMODULE self = nullptr;
 	if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 			(LPCSTR)(void*)&HostRegionFree, &self) && self)
@@ -306,6 +449,7 @@ SysMainMemory::Placement SysMainMemory::PlaceMainAndCode()
 		}
 		log_cb(RETRO_LOG_WARN, "No room within reach of the core image for main memory and the code cache; "
 			"falling back to fixed slots\n");
+		LogReach(image_start > reach ? image_start - reach : 0, image_end + reach);
 	}
 #endif
 	return Placement(AllocateVirtualMemory("pcsx2", HostMemoryMap::MainSize, false),
