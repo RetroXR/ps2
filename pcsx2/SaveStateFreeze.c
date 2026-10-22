@@ -133,5 +133,10 @@ bool SaveState_FreezeInternals(SaveStateBase *s)
 	 * such stuff to merit an HLE Bios sub-section... yet. */
 	okay = okay && deci2Freeze(s);
 
+	/* The i.LINK controller. A state saved before it was modelled has no
+	 * such block, and fwFreeze then starts it as a lone node that has just
+	 * been powered on. */
+	okay = okay && fwFreeze(s);
+
 	return okay;
 }

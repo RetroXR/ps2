@@ -141,6 +141,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "enabled"
    },
    {
+      "pcsx2_ilink",
+      "System > i.LINK Cable (Restart)",
+      "i.LINK Cable (Restart)",
+      "Emulate the i.LINK (IEEE 1394) port and a cable between it and other PlayStation 2 consoles running in the same frontend, for link play such as Time Crisis II's cooperative mode. The frontend decides which consoles are cabled together and must support the link interface; where it does not, the port behaves as one with nothing plugged in.",
+      NULL,
+      "system",
+      {
+         { "enabled", NULL },
+         { "disabled", NULL },
+         { NULL, NULL },
+      },
+      "enabled"
+   },
+   {
       "pcsx2_fastcdvd",
       "System > Fast CD/DVD Access (Restart)",
       "Fast CD/DVD Access (Restart)",

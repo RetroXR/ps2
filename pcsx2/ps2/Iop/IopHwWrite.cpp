@@ -119,6 +119,8 @@ void iopHwWrite8_Page8( u32 addr, mem8_t val )
 {
 	if (addr == HW_SIO2_DATAIN)
 		sio2.Write(val);
+	else if ((addr & 0x0fff) >= 0x400 && (addr & 0x0fff) < 0x580)
+		FWwrite8(addr, val);
 	else
 		psxHu8(addr) = val;
 
@@ -488,6 +490,11 @@ void iopHwWrite16_Page3( u32 addr, mem16_t val )
 
 void iopHwWrite16_Page8( u32 addr, mem16_t val )
 {
+	if ((addr & 0x0fff) >= 0x400 && (addr & 0x0fff) < 0x580)
+	{
+		FWwrite16(addr, val);
+		return;
+	}
 	psxHu16(addr) = val;
 }
 

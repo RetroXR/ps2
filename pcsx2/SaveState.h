@@ -118,6 +118,8 @@ bool cdvdFreeze(SaveStateBase *s);
 bool psxRcntFreeze(SaveStateBase *s);
 bool sio2Freeze(SaveStateBase *s);
 bool deci2Freeze(SaveStateBase *s);
+/* The i.LINK controller (FW.cpp), the last block: optional on a load. */
+bool fwFreeze(SaveStateBase *s);
 
 #ifdef __cplusplus
 }
