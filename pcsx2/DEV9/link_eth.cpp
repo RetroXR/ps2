@@ -16,7 +16,7 @@
 /* The network adapter's Ethernet cable.
  *
  * The cable is the frontend's link bus (RETRO_ENVIRONMENT_GET_LINK_INTERFACE),
- * protocol "ethernet-1", on the IOP's 36.864 MHz, and the room it runs in is a
+ * protocol "ethernet", on the IOP's 36.864 MHz, and the room it runs in is a
  * hub: every frame a console puts on the cable reaches every other console on
  * it, and each keeps what is addressed to it, to a group or to everybody. Each
  * frame is stamped on the cable's clock and handed to the SMAP when this

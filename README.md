@@ -81,7 +81,7 @@ handle the frontend gave it.
 
 Consoles running in the same frontend can be cabled to one Ethernet hub. The
 network adapter's socket is the frontend's link bus
-(`RETRO_ENVIRONMENT_GET_LINK_INTERFACE`, protocol `ethernet-1`, link port 1, on
+(`RETRO_ENVIRONMENT_GET_LINK_INTERFACE`, protocol `ethernet`, link port 1, on
 the IOP's 36.864 MHz): one message is one Ethernet II frame exactly as it is on
 the wire, destination MAC first, without preamble or FCS, and every frame goes
 to every other console on the bus, as a hub repeats it. Dolphin's broadband

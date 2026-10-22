@@ -24,7 +24,7 @@
  * is one Ethernet II frame exactly as it is on the wire, destination MAC first,
  * with neither preamble nor FCS. Every frame goes to every console on the bus,
  * as a hub repeats it; each adapter keeps what is addressed to it. */
-#define ETH_LINK_PROTOCOL "ethernet-1"
+#define ETH_LINK_PROTOCOL "ethernet"
 
 /* The link port the cable attaches on. The i.LINK cable has port 0. */
 #define ETH_LINK_PORT 1
