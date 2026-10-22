@@ -168,6 +168,7 @@ SOURCES_CXX += \
 	$(LRPS2_DIR)/DEV9/AdapterUtils.cpp \
 	$(LRPS2_DIR)/DEV9/DEV9.cpp \
 	$(LRPS2_DIR)/DEV9/flash.cpp \
+	$(LRPS2_DIR)/DEV9/link_eth.cpp \
 	$(LRPS2_DIR)/DEV9/net.cpp \
 	$(LRPS2_DIR)/DEV9/smap.cpp \
 	$(LRPS2_DIR)/DEV9/sockets.cpp \

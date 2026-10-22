@@ -498,6 +498,7 @@ const char* Pcsx2Config::DEV9Options::NetApiNames[] = {
 	"PCAP Switched",
 	"TAP",
 	"Sockets",
+	"Link",
 	nullptr};
 
 const char* Pcsx2Config::DEV9Options::DnsModeNames[] = {

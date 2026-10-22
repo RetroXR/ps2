@@ -32,6 +32,7 @@
 #include "MTGSOwner.h"
 #include "CDVD/CDVD.h"     /* cdvdGetDiscRegion */
 #include "FW.h"             /* FWvsync */
+#include "DEV9/link_eth.h"  /* ETHvsync */
 #include "ps2/BiosTools.h" /* BiosRegion */
 
 #ifdef __LIBRETRO__
@@ -582,6 +583,7 @@ static __fi void VSyncStart(u64 sCycle)
 {
 	int i;
 	FWvsync();
+	ETHvsync();
 	for (i = 0; static_cast<size_t>(i) < Patch.size(); i++)
 	{
 		int _place = Patch[i].placetopatch;

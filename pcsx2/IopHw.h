@@ -306,6 +306,7 @@ typedef enum IopEventId
 	IopEvt_DEV9,
 	IopEvt_USB,
 	IopEvt_FW,
+	IopEvt_ETH,
 } IopEventId;
 
 extern void PSX_INT( IopEventId n, s32 ecycle);

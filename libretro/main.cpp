@@ -29,6 +29,7 @@
 #include "../pcsx2/ps2/BiosTools.h"
 #include "../pcsx2/CDVD/CDVD.h"
 #include "../pcsx2/FW.h"
+#include "../pcsx2/DEV9/link_eth.h"
 #include "../pcsx2/USB/USB.h"
 #include "../pcsx2/USB/usb-eyetoy/eyetoy-frontend.h"
 #include "../pcsx2/DEV9/ATA/HddCreate.h"
@@ -158,8 +159,9 @@ struct BiosInfo
 static std::vector<BiosInfo> bios_info;
 static std::string setting_bios;
 
-/* The frontend's link bus, which is the i.LINK cable; NULL when it has none.
- * Looked up once in retro_init; joined per content, behind pcsx2_ilink. */
+/* The frontend's link bus, which the i.LINK and Ethernet cables are; NULL
+ * when it has none. Looked up once in retro_init; joined per content, behind
+ * pcsx2_ilink and pcsx2_dev9_eth. */
 static struct retro_link_interface s_link_iface;
 static const struct retro_link_interface* s_link_interface = NULL;
 static bool s_option_ilink = true;
@@ -209,6 +211,8 @@ static bool setting_pcrtc_antiblur             = true;
 static bool setting_enable_cheats              = false;
 static bool setting_dev9_hdd                   = false;
 static bool setting_dev9_eth                   = false;
+/* pcsx2_dev9_eth "link": the adapter's socket is the frontend's link bus. */
+static bool setting_dev9_eth_link              = false;
 static u32  setting_dev9_hdd_sectors           = 40u * (1024 * 1024 * 1024 / 512);
 static bool setting_enable_hw_hacks            = false;
 static bool setting_auto_flush_software        = true;
@@ -1248,14 +1252,21 @@ static void check_variables(bool first_run)
 	if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
 	{
 		const bool dev9_eth_prev = setting_dev9_eth;
-		setting_dev9_eth = !strcmp(var.value, "enabled");
+		const bool dev9_eth_link_prev = setting_dev9_eth_link;
+		setting_dev9_eth_link = !strcmp(var.value, "link");
+		setting_dev9_eth = setting_dev9_eth_link || !strcmp(var.value, "enabled");
 
-		if (first_run || setting_dev9_eth != dev9_eth_prev)
+		if (first_run || setting_dev9_eth != dev9_eth_prev || setting_dev9_eth_link != dev9_eth_link_prev)
 		{
 			s_option_config.DEV9.EthEnable = setting_dev9_eth;
 			if (setting_dev9_eth)
 			{
-				s_option_config.DEV9.EthApi = Pcsx2Config::DEV9Options::NetApi::Sockets;
+				/* The cable itself is joined once, at load (ETHlinkAttach): a
+				 * console switched to it while running has an adapter with
+				 * nothing in its socket until the content is loaded again. */
+				s_option_config.DEV9.EthApi = setting_dev9_eth_link
+					? Pcsx2Config::DEV9Options::NetApi::Link
+					: Pcsx2Config::DEV9Options::NetApi::Sockets;
 				s_option_config.DEV9.EthDevice = "Auto";
 			}
 			updated = true;
@@ -1855,6 +1866,7 @@ extern "C" void pcsx2_jithash_dump(void);
 void retro_deinit(void)
 {
 	FWlinkDetach();
+	ETHlinkDetach();
 	pcsx2_jithash_dump();
 	if (audio_queue_dropped)
 		log_cb(RETRO_LOG_WARN, "%u audio samples dropped: the frontend stopped taking audio\n",
@@ -2828,6 +2840,10 @@ bool retro_load_game(const struct retro_game_info* game)
 	 * boot already carries this console's salt. */
 	if (s_option_ilink && s_link_interface)
 		FWlinkAttach(s_link_interface, 0);
+	/* The Ethernet cable likewise, and before the adapter is made: its MAC,
+	 * which the game reads from the adapter's EEPROM, is this console's own. */
+	if (setting_dev9_eth_link && s_link_interface)
+		ETHlinkAttach(s_link_interface, ETH_LINK_PORT);
 	cpu_thread = sthread_create_with_stack_size(cpu_thread_entry_trampoline, NULL,
 			VMManager::EMU_THREAD_STACK_SIZE);
 	/* The EE pins itself during Initialize; the handle is for pins made
@@ -2892,6 +2908,7 @@ void retro_unload_game(void)
 	 * cable waiting for its peer would otherwise hold up the pause below for
 	 * as long as the peer stays away. */
 	FWlinkDetach();
+	ETHlinkDetach();
 
 	free(s_unserialize_backup);
 	s_unserialize_backup      = NULL;
