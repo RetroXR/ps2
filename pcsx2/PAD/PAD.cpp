@@ -181,6 +181,7 @@ static int slots[2] = {0, 0};
 static bool force_analog_pending[2][4];
 
 extern retro_environment_t environ_cb;
+extern "C" retro_log_printf_t log_cb;
 static retro_input_poll_t poll_cb;
 static retro_input_state_t input_cb;
 struct retro_rumble_interface rumble;
@@ -203,13 +204,56 @@ struct pad_input
 	u8  keys[RETROK_LAST / 8 + 1];
 	u8  mouse_buttons;
 };
-static struct pad_input pad_staged[2];
-static struct pad_input pad_live[2];
+/* Indexed by LIBRETRO port, as the frontend reads them; which pad (PCSX2's
+ * pad index, sioConvertPortAndSlotToPad) each one is comes from the
+ * multitap map below. The USB keyboard and mouse stay on libretro ports
+ * 0 and 1. */
+static struct pad_input pad_staged[NUM_CONTROLLER_PORTS];
+static struct pad_input pad_live[NUM_CONTROLLER_PORTS];
+
+/* The multitap (pcsx2_multitap): bit 0 a tap in port 1, bit 1 in port 2.
+ * The libretro ports are the pads in this order, as PCEE2 lays them out:
+ * 1A, then 1B-1D with a tap in port 1, then 2A, then 2B-2D with a tap in
+ * port 2. So a tap in port 1 moves the console's port 2 to libretro port
+ * 4, and the frontend must follow it there. */
+static int s_multitap = 0;
+static u8 s_lr_pad[NUM_CONTROLLER_PORTS];  /* libretro port -> pad index */
+static unsigned s_lr_count = 2;
+/* pad index -> libretro port (0xFF: none), staged with the input and
+ * latched with it, so the EE never reads a map from a different frame
+ * than the input it maps. */
+static u8 pad_lr_staged[NUM_CONTROLLER_PORTS];
+static u8 pad_lr_live[NUM_CONTROLLER_PORTS];
+
+static void build_pad_map(void)
+{
+	unsigned n = 0;
+	s_lr_pad[n++] = 0; /* 1A */
+	if (s_multitap & 1)
+	{
+		s_lr_pad[n++] = 2; /* 1B */
+		s_lr_pad[n++] = 3; /* 1C */
+		s_lr_pad[n++] = 4; /* 1D */
+	}
+	s_lr_pad[n++] = 1; /* 2A */
+	if (s_multitap & 2)
+	{
+		s_lr_pad[n++] = 5; /* 2B */
+		s_lr_pad[n++] = 6; /* 2C */
+		s_lr_pad[n++] = 7; /* 2D */
+	}
+	s_lr_count = n;
+	for (unsigned i = n; i < NUM_CONTROLLER_PORTS; i++)
+		s_lr_pad[i] = 0xFF;
+	memset(pad_lr_staged, 0xFF, sizeof(pad_lr_staged));
+	for (unsigned l = 0; l < n; l++)
+		pad_lr_staged[s_lr_pad[l]] = (u8)l;
+}
 
 extern "C" void pad_input_latch(void)
 {
 	unsigned port;
-	for (port = 0; port < 2; port++)
+	for (port = 0; port < NUM_CONTROLLER_PORTS; port++)
 	{
 		const int mx = pad_live[port].mouse_x + pad_staged[port].mouse_x;
 		const int my = pad_live[port].mouse_y + pad_staged[port].mouse_y;
@@ -219,6 +263,17 @@ extern "C" void pad_input_latch(void)
 		pad_staged[port].mouse_x = 0;
 		pad_staged[port].mouse_y = 0;
 	}
+	memcpy(pad_lr_live, pad_lr_staged, sizeof(pad_lr_live));
+}
+
+/* What pad `pad_index` reports now: its libretro port's latched input, or
+ * every button up and the sticks centred if no libretro port is it. */
+static const struct pad_input* pad_live_for(u32 pad_index)
+{
+	static const struct pad_input released = { 0xFFFFFFFF };
+	if (pad_index >= NUM_CONTROLLER_PORTS || pad_lr_live[pad_index] >= NUM_CONTROLLER_PORTS)
+		return &released;
+	return &pad_live[pad_lr_live[pad_index]];
 }
 
 /* The input_state the USB HID devices read through: the latched copy. */
@@ -251,7 +306,8 @@ static int16_t pad_latched_input(unsigned port, unsigned device, unsigned index,
 	}
 }
 
-static int pad_type[2] = { -1, -1 };
+/* The device the frontend set on each libretro port (-1: never set). */
+static int pad_type[NUM_CONTROLLER_PORTS] = { -1, -1, -1, -1, -1, -1, -1, -1 };
 
 PadSettings pad_settings[2];
 
@@ -433,16 +489,6 @@ namespace Input
 		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_DPAD_LEFT, "GunCon 2 D-Pad Left" }, \
 		{ port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_DPAD_RIGHT, "GunCon 2 D-Pad Right" }
 
-		/* Only ports 0 and 1 are actually polled in Update() and only
-		 * pads[0..1][0..3] are wired through PAD/SIO. Advertising 8
-		 * descriptor ports while polling 2 confuses the frontend's
-		 * input UI: ports 2-7 show up as bindable but never read. */
-		struct retro_input_descriptor desc[] = {
-			JOY_DESC(0), JOY_DESC(1),
-			GUN_DESC(0), GUN_DESC(1),
-			{},
-		};
-
 		static const struct retro_controller_description port_devices[] = {
 			{ "DualShock 2", RETRO_DEVICE_JOYPAD },
 			{ "GunCon 2", RETRO_DEVICE_LIGHTGUN },
@@ -451,26 +497,58 @@ namespace Input
 			{ "USB Keyboard + Mouse", RETRO_DEVICE_KEYBOARD_AND_MOUSE },
 			{},
 		};
-
-		static const struct retro_controller_info ports[] = {
-			{ port_devices, (sizeof(port_devices) / sizeof(*port_devices)) - 1 },
-			{ port_devices, (sizeof(port_devices) / sizeof(*port_devices)) - 1 },
+		/* A multitap's pads are DualShock 2s; the USB devices stay on
+		 * libretro ports 0 and 1 (the PS2's two USB sockets). */
+		static const struct retro_controller_description tap_devices[] = {
+			{ "DualShock 2", RETRO_DEVICE_JOYPAD },
 			{},
 		};
+#define PORT_DEVICES(list) { list, (sizeof(list) / sizeof(*list)) - 1 }
+		static const struct retro_controller_info ports[] = {
+			PORT_DEVICES(port_devices), PORT_DEVICES(port_devices),
+			PORT_DEVICES(tap_devices), PORT_DEVICES(tap_devices), PORT_DEVICES(tap_devices),
+			PORT_DEVICES(tap_devices), PORT_DEVICES(tap_devices), PORT_DEVICES(tap_devices),
+			{},
+		};
+#undef PORT_DEVICES
 
 		environ_cb(RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE, &rumble);
 		environ_cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void*)ports);
-		environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
+		build_pad_map();
+		SendDescriptors();
 
 		Shutdown();
+	}
+
+	/* The joypad descriptors of the libretro ports the map polls, and no
+	 * more: advertising ports that are never read shows them as bindable
+	 * in a frontend's input UI. Re-sent when the multitap changes. */
+	void SendDescriptors()
+	{
+		static const struct retro_input_descriptor joy[] = {
+			JOY_DESC(0), JOY_DESC(1), JOY_DESC(2), JOY_DESC(3),
+			JOY_DESC(4), JOY_DESC(5), JOY_DESC(6), JOY_DESC(7),
+		};
+		static const struct retro_input_descriptor gun[] = {
+			GUN_DESC(0), GUN_DESC(1),
+		};
+		static const unsigned per_port = (sizeof(joy) / sizeof(*joy)) / NUM_CONTROLLER_PORTS;
+		static struct retro_input_descriptor desc[sizeof(joy) / sizeof(*joy) + sizeof(gun) / sizeof(*gun) + 1];
+		unsigned n = 0;
+		for (unsigned i = 0; i < per_port * s_lr_count; i++)
+			desc[n++] = joy[i];
+		for (unsigned i = 0; i < sizeof(gun) / sizeof(*gun); i++)
+			desc[n++] = gun[i];
+		desc[n] = {};
+		environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
 	}
 
 	/* All released, staged and live: the EE is not running. */
 	void Shutdown()
 	{
 		memset(pad_staged, 0, sizeof(pad_staged));
-		pad_staged[0].buttons = 0xFFFFFFFF;
-		pad_staged[1].buttons = 0xFFFFFFFF;
+		for (unsigned port = 0; port < NUM_CONTROLLER_PORTS; port++)
+			pad_staged[port].buttons = 0xFFFFFFFF;
 		pad_input_latch();
 		usb_guncon2::ResetAllInputs();
 	}
@@ -479,15 +557,28 @@ namespace Input
 	{
 		poll_cb();
 
-		for (unsigned port = 0; port < 2; port++)
+		/* A libretro port the map does not poll reports every button up. */
+		for (unsigned port = s_lr_count; port < NUM_CONTROLLER_PORTS; port++)
 		{
-			if (pad_type[port] == RETRO_DEVICE_LIGHTGUN)
+			pad_staged[port].buttons = 0xFFFFFFFF;
+			pad_staged[port].lx = pad_staged[port].ly = 0;
+			pad_staged[port].rx = pad_staged[port].ry = 0;
+			memset(pad_staged[port].analog, 0, sizeof(pad_staged[port].analog));
+		}
+
+		for (unsigned port = 0; port < s_lr_count; port++)
+		{
+			const u32 pad_index = s_lr_pad[port];
+			const auto [con_port, con_slot] = sioConvertPadToPortAndSlot(pad_index);
+
+			if (port < 2 && pad_type[port] == RETRO_DEVICE_LIGHTGUN)
 				usb_guncon2::UpdateInput(port, input_cb);
 
 			u32 mask            = input_cb(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);
 			u32 new_button_mask = 0xFFFF0000;
 			u32 btn_index       = 0;
-			const auto &conf    = pad_settings[port];
+			/* The console port's settings: a multitap's pads share them. */
+			const auto &conf    = pad_settings[con_port];
 
 			for (int i = 0; i < 16; ++i)
 			{
@@ -519,8 +610,8 @@ namespace Input
 			new_rx *= conf.axis_invert_rx;
 			new_ry *= conf.axis_invert_ry;
 
-			if (pad_type[port] == RETRO_DEVICE_KEYBOARD
-			 || pad_type[port] == RETRO_DEVICE_KEYBOARD_AND_MOUSE)
+			if (port < 2 && (pad_type[port] == RETRO_DEVICE_KEYBOARD
+			 || pad_type[port] == RETRO_DEVICE_KEYBOARD_AND_MOUSE))
 			{
 				unsigned k;
 				memset(pad_staged[port].keys, 0, sizeof(pad_staged[port].keys));
@@ -528,8 +619,8 @@ namespace Input
 					if (input_cb(port, RETRO_DEVICE_KEYBOARD, 0, k))
 						pad_staged[port].keys[k >> 3] |= (u8)(1u << (k & 7));
 			}
-			if (pad_type[port] == RETRO_DEVICE_MOUSE
-			 || pad_type[port] == RETRO_DEVICE_KEYBOARD_AND_MOUSE)
+			if (port < 2 && (pad_type[port] == RETRO_DEVICE_MOUSE
+			 || pad_type[port] == RETRO_DEVICE_KEYBOARD_AND_MOUSE))
 			{
 				pad_staged[port].mouse_x += input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X);
 				pad_staged[port].mouse_y += input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y);
@@ -546,7 +637,7 @@ namespace Input
 			pad_staged[port].ry      = new_ry;
 
 			if (conf.rumble_scale_q8 > 0)
-				pads[port][0].rumble(conf.rumble_scale_q8, sioConvertPortAndSlotToPad(port, 0));
+				pads[con_port][con_slot].rumble(conf.rumble_scale_q8, port);
 		}
 	}
 
@@ -567,64 +658,95 @@ retro_input_state_t PADGetInputStateCallback(void)
 	return pad_latched_input;
 }
 
-/* The per-port controller type, as the frontend set it through
- * retro_set_controller_port_device; port 0 defaults to a DualShock2 and
- * the others to nothing, as the Pad section's defaults were. The
- * multitap flags and motor scales had no writer and are the defaults. */
-static const char* s_pad_type_name[NUM_CONTROLLER_PORTS];
+/* The controller type of the pad libretro port `port` drives, as the
+ * frontend set it through retro_set_controller_port_device: port 0
+ * defaults to a DualShock2 and the others to nothing, as the Pad
+ * section's defaults were. A GunCon, keyboard or mouse is a USB device
+ * and keeps the DualShock 2 on its controller port. */
+static const char* pad_type_name(unsigned port)
+{
+	switch (pad_type[port])
+	{
+		case -1:
+			return port == 0 ? "DualShock2" : "None";
+		case RETRO_DEVICE_JOYPAD:
+		case RETRO_DEVICE_LIGHTGUN:
+		case RETRO_DEVICE_KEYBOARD:
+		case RETRO_DEVICE_MOUSE:
+		case RETRO_DEVICE_KEYBOARD_AND_MOUSE:
+			return "DualShock2";
+		default:
+			return "None";
+	}
+}
 
 void retro_set_controller_port_device(unsigned port, unsigned device)
 {
-	if (port >= 2)
+	if (port >= NUM_CONTROLLER_PORTS)
 		return;
 
 	if (pad_type[port] != (int)device)
 	{
 		pad_type[port] = device;
-		usb_guncon2::ResetInput(port);
 
-		switch (device)
+		/* The USB sockets are libretro ports 0 and 1's; a multitap's
+		 * other pads have none. */
+		if (port < 2)
 		{
-			case RETRO_DEVICE_JOYPAD:
-				s_pad_type_name[port] = "DualShock2";
-				USBSetPortDevice(port, USB_DEV_NONE, port);
-				break;
-			case RETRO_DEVICE_LIGHTGUN:
-				/* The GunCon is a USB peripheral, so it does not displace the
-				 * emulated SIO DualShock 2. */
-				s_pad_type_name[port] = "DualShock2";
-				USBSetPortDevice(port, USB_DEV_GUNCON2, port);
-				break;
-			case RETRO_DEVICE_KEYBOARD:
-				/* USB HID keyboard coexists with the DualShock on this slot,
-				 * as on real hardware - the pad stays available for menu/pause
-				 * navigation while the keyboard drives gameplay. */
-				s_pad_type_name[port] = "DualShock2";
-				USBSetPortDevice(port, USB_DEV_KEYBOARD, port);
-				break;
-			case RETRO_DEVICE_MOUSE:
-				/* USB HID mouse coexists with the DualShock on this slot. */
-				s_pad_type_name[port] = "DualShock2";
-				USBSetPortDevice(port, USB_DEV_MOUSE, port);
-				break;
-			case RETRO_DEVICE_KEYBOARD_AND_MOUSE:
-				/* Keyboard + mouse together claim both USB ports (kbd on 0,
-				 * mouse on 1) regardless of which controller port this was
-				 * selected from - the PS2 has only two USB ports. Both read
-				 * frontend input from this controller port. The DualShock on
-				 * this slot is kept for menu/pause navigation. */
-				s_pad_type_name[port] = "DualShock2";
-				USBSetPortDevice(0, USB_DEV_KEYBOARD, port);
-				USBSetPortDevice(1, USB_DEV_MOUSE, port);
-				break;
-			default:
-				s_pad_type_name[port] = "None";
-				USBSetPortDevice(port, USB_DEV_NONE, port);
-				break;
+			usb_guncon2::ResetInput(port);
+
+			switch (device)
+			{
+				case RETRO_DEVICE_LIGHTGUN:
+					/* The GunCon is a USB peripheral, so it does not displace the
+					 * emulated SIO DualShock 2. */
+					USBSetPortDevice(port, USB_DEV_GUNCON2, port);
+					break;
+				case RETRO_DEVICE_KEYBOARD:
+					/* USB HID keyboard coexists with the DualShock on this slot,
+					 * as on real hardware - the pad stays available for menu/pause
+					 * navigation while the keyboard drives gameplay. */
+					USBSetPortDevice(port, USB_DEV_KEYBOARD, port);
+					break;
+				case RETRO_DEVICE_MOUSE:
+					/* USB HID mouse coexists with the DualShock on this slot. */
+					USBSetPortDevice(port, USB_DEV_MOUSE, port);
+					break;
+				case RETRO_DEVICE_KEYBOARD_AND_MOUSE:
+					/* Keyboard + mouse together claim both USB ports (kbd on 0,
+					 * mouse on 1) regardless of which controller port this was
+					 * selected from - the PS2 has only two USB ports. Both read
+					 * frontend input from this controller port. The DualShock on
+					 * this slot is kept for menu/pause navigation. */
+					USBSetPortDevice(0, USB_DEV_KEYBOARD, port);
+					USBSetPortDevice(1, USB_DEV_MOUSE, port);
+					break;
+				default:
+					USBSetPortDevice(port, USB_DEV_NONE, port);
+					break;
+			}
 		}
 
 		PAD::LoadConfig();
 	}
+}
+
+/* pcsx2_multitap: 0 none, 1 a tap in port 1, 2 in port 2, 3 both. Lays
+ * the libretro ports out again and re-sends their descriptors; the
+ * caller applies the settings (PAD::LoadConfig through
+ * VMManager::ApplySettings, with the EE paused) when this says it changed. */
+bool PADSetMultitap(int mode)
+{
+	mode &= 3;
+	if (mode == s_multitap)
+		return false;
+	s_multitap = mode;
+	build_pad_map();
+	Input::SendDescriptors();
+	log_cb(RETRO_LOG_WARN, "[PAD] multitap %s: %u libretro ports, the console's port 2 is libretro port %u\n",
+		mode == 0 ? "off" : mode == 1 ? "in port 1" : mode == 2 ? "in port 2" : "in ports 1 and 2",
+		s_lr_count, (unsigned)pad_lr_staged[1]);
+	return true;
 }
 
 void do_rumble(u8 intensity, unsigned type, unsigned port)
@@ -646,7 +768,7 @@ void stop_rumble()
 	if (!rumble.set_rumble_state)
 		return;
 
-	for (int port = 0; port < 2; ++port)
+	for (int port = 0; port < NUM_CONTROLLER_PORTS; ++port)
 	{
 		rumble.set_rumble_state(port, RETRO_RUMBLE_STRONG, 0);
 		rumble.set_rumble_state(port, RETRO_RUMBLE_WEAK, 0);
@@ -871,7 +993,8 @@ u8 PADpoll(u8 value)
 					query.response[2] = 0x5A;
 
 					const u32 ext_port = sioConvertPortAndSlotToPad(query.port, query.slot);
-					const u32 buttons  = pad_live[ext_port].buttons;
+					const struct pad_input* in = pad_live_for(ext_port);
+					const u32 buttons  = in->buttons;
 
 					// "Start in analog mode" option: on the first read after
 					// reset, promote a still-digital, unlocked pad to analog.
@@ -906,27 +1029,27 @@ u8 PADpoll(u8 value)
 
 					if (pad->mode != MODE_DIGITAL) // ANALOG || DS2 native
 					{
-						query.response[5] = 0x80 + (pad_live[ext_port].rx >> 8);
-						query.response[6] = 0x80 + (pad_live[ext_port].ry >> 8);
-						query.response[7] = 0x80 + (pad_live[ext_port].lx >> 8);
-						query.response[8] = 0x80 + (pad_live[ext_port].ly >> 8);
+						query.response[5] = 0x80 + (in->rx >> 8);
+						query.response[6] = 0x80 + (in->ry >> 8);
+						query.response[7] = 0x80 + (in->lx >> 8);
+						query.response[8] = 0x80 + (in->ly >> 8);
 
 						if (pad->mode != MODE_ANALOG) /* DS2 native */
 						{
 							query.numBytes             = 21;
 
-							query.response[9]          = TEST_BIT(buttons, 13) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_RIGHT];
-							query.response[10]         = TEST_BIT(buttons, 15) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_LEFT];
-							query.response[11]         = TEST_BIT(buttons, 12) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_UP];
-							query.response[12]         = TEST_BIT(buttons, 14) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_DOWN];
-							query.response[13]         = TEST_BIT(buttons,  4) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_TRIANGLE];
-							query.response[14]         = TEST_BIT(buttons,  5) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_CIRCLE];
-							query.response[15]         = TEST_BIT(buttons,  6) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_CROSS];
-							query.response[16]         = TEST_BIT(buttons,  7) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_SQUARE];
-							query.response[17]         = TEST_BIT(buttons,  2) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_L1];
-							query.response[18]         = TEST_BIT(buttons,  3) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_R1];
-							query.response[19]         = TEST_BIT(buttons,  0) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_L2];
-							query.response[20]         = TEST_BIT(buttons,  1) ? 0 : pad_live[ext_port].analog[ANALOG_BTN_R2];
+							query.response[9]          = TEST_BIT(buttons, 13) ? 0 : in->analog[ANALOG_BTN_RIGHT];
+							query.response[10]         = TEST_BIT(buttons, 15) ? 0 : in->analog[ANALOG_BTN_LEFT];
+							query.response[11]         = TEST_BIT(buttons, 12) ? 0 : in->analog[ANALOG_BTN_UP];
+							query.response[12]         = TEST_BIT(buttons, 14) ? 0 : in->analog[ANALOG_BTN_DOWN];
+							query.response[13]         = TEST_BIT(buttons,  4) ? 0 : in->analog[ANALOG_BTN_TRIANGLE];
+							query.response[14]         = TEST_BIT(buttons,  5) ? 0 : in->analog[ANALOG_BTN_CIRCLE];
+							query.response[15]         = TEST_BIT(buttons,  6) ? 0 : in->analog[ANALOG_BTN_CROSS];
+							query.response[16]         = TEST_BIT(buttons,  7) ? 0 : in->analog[ANALOG_BTN_SQUARE];
+							query.response[17]         = TEST_BIT(buttons,  2) ? 0 : in->analog[ANALOG_BTN_L1];
+							query.response[18]         = TEST_BIT(buttons,  3) ? 0 : in->analog[ANALOG_BTN_R1];
+							query.response[19]         = TEST_BIT(buttons,  0) ? 0 : in->analog[ANALOG_BTN_L2];
+							query.response[20]         = TEST_BIT(buttons,  1) ? 0 : in->analog[ANALOG_BTN_R2];
 						}
 						else
 							query.numBytes             = 9;
@@ -1103,11 +1226,13 @@ bool PADcomplete(void) { return query.queryDone; }
 
 void PAD::LoadConfig()
 {
-	EmuConfig.MultitapPort0_Enabled = false;
-	EmuConfig.MultitapPort1_Enabled = false;
+	EmuConfig.MultitapPort0_Enabled = (s_multitap & 1) != 0;
+	EmuConfig.MultitapPort1_Enabled = (s_multitap & 2) != 0;
 	for (u32 i = 0; i < NUM_CONTROLLER_PORTS; i++)
 	{
-		const char* type = s_pad_type_name[i] ? s_pad_type_name[i] : ((i == 0) ? "DualShock2" : "None");
+		/* Pad index i is the pad of the libretro port the map puts there,
+		 * or not connected (a multitap slot with no tap). */
+		const char* type = pad_lr_staged[i] < NUM_CONTROLLER_PORTS ? pad_type_name(pad_lr_staged[i]) : "None";
 		g_key_status.m_type[i]     = NotConnected;
 		for (const ControllerInfo& info : s_controller_info)
 		{

@@ -1524,6 +1524,23 @@ static void check_variables(bool first_run)
 		}
 	}
 
+	/* The multitap: lays the libretro ports out again (PADSetMultitap)
+	 * and turns the SIO2's taps on through PAD::LoadConfig, which
+	 * ApplySettings runs with the EE paused. Read live, as PCEE2's. */
+	var.key = "pcsx2_multitap";
+	if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+	{
+		int mode = 0;
+		if (!strcmp(var.value, "port1"))
+			mode = 1;
+		else if (!strcmp(var.value, "port2"))
+			mode = 2;
+		else if (!strcmp(var.value, "both"))
+			mode = 3;
+		if (PADSetMultitap(mode))
+			updated = true;
+	}
+
 	char input_settings[32];
 	for (int i = 0; i < 2; ++i)
 	{

@@ -1124,6 +1124,22 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "disabled"
    },
    {
+      "pcsx2_multitap",
+      "Input > Multitap",
+      "Multitap",
+      "A Multitap (SCPH-10090) in controller port 1, port 2 or both. A tap in port 1 makes its four pads libretro ports 1-4 and moves the console's port 2 to libretro port 5; a tap in port 2 is the four after that. The same option, values and port layout as PCEE2.",
+      NULL,
+      "input",
+      {
+         { "disabled", NULL },
+         { "port1", "Port 1" },
+         { "port2", "Port 2" },
+         { "both", "Ports 1 and 2" },
+         { NULL, NULL },
+      },
+      "disabled"
+   },
+   {
       "pcsx2_axis_deadzone1",
       "Input > Port 1 > Analog Deadzone",
       "Port 1 > Analog Deadzone",

@@ -113,9 +113,14 @@ namespace PAD
 namespace Input
 {
 	void Init();
+	void SendDescriptors();
 	void Update();
 	void Shutdown();
 }
+
+/* pcsx2_multitap: 0 none, 1 a tap in port 1, 2 in port 2, 3 both. True
+ * when it changed, and the settings must be applied (PAD.cpp). */
+bool PADSetMultitap(int mode);
 
 /* The input Input::Update staged becomes what the pads report. Only
  * while the EE is held: see PAD.cpp. */
