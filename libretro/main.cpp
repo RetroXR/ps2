@@ -2312,12 +2312,10 @@ void retro_init(void)
 
 	vu1Thread.Reset();
 
-	/* The experimental number first, then the plain one a frontend that has
-	 * adopted the interface will answer to. */
+	/* The link interface (libretro/RetroArch#19454), at its EXPERIMENTAL number. */
 	memset(&s_link_iface, 0, sizeof(s_link_iface));
 	s_link_interface = NULL;
-	if (environ_cb(RETRO_ENVIRONMENT_GET_LINK_INTERFACE, &s_link_iface) ||
-	    environ_cb(RETRO_ENVIRONMENT_GET_LINK_INTERFACE_FINAL, &s_link_iface))
+	if (environ_cb(RETRO_ENVIRONMENT_GET_LINK_INTERFACE, &s_link_iface))
 		s_link_interface = &s_link_iface;
 
 	if (setting_bios.empty())
