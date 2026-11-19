@@ -2312,7 +2312,7 @@ void retro_init(void)
 
 	vu1Thread.Reset();
 
-	/* The link interface (libretro/RetroArch#19454), at its EXPERIMENTAL number. */
+	/* Link interface (libretro/RetroArch#19454). */
 	memset(&s_link_iface, 0, sizeof(s_link_iface));
 	s_link_interface = NULL;
 	if (environ_cb(RETRO_ENVIRONMENT_GET_LINK_INTERFACE, &s_link_iface))
